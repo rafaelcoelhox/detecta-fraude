@@ -1,0 +1,7 @@
+{
+  "participants": ["Rafael Coelho"],
+  "social": ["https://github.com/rafaelcoelhox"],
+  "source-code-repo": "https://github.com/rafaelcoelhox/detecta-fraude",
+  "stack": ["rust", "c", "partitioned kd-tree", "scm_rights", "epoll", "avx2"],
+  "open_to_work": false
+}

@@ -1,0 +1,10 @@
+FROM debian:bookworm-slim AS builder
+WORKDIR /src
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY native/fd-lb.c .
+RUN gcc -O3 -Wall -Wextra -static -o fd-lb fd-lb.c && strip fd-lb
+
+FROM scratch
+COPY --from=builder /src/fd-lb /fd-lb
+ENTRYPOINT ["/fd-lb"]
