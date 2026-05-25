@@ -1,9 +1,6 @@
 services:
   lb:
     image: ghcr.io/rafaelcoelhox/detecta-fraude-lb:latest
-    build:
-      context: .
-      dockerfile: Dockerfile.lb
     container_name: detecta-lb
     platform: linux/amd64
     ports:
@@ -32,10 +29,7 @@ services:
           memory: "28MB"
 
   api1:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-lb:latest
-    build:
-      context: .
-      dockerfile: Dockerfile.api
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:latest
     container_name: detecta-api1
     platform: linux/amd64
     networks:
@@ -57,10 +51,7 @@ services:
           memory: "160MB"
 
   api2:
-    image: rinha2026-detecta-fraude/api:latest
-    build:
-      context: .
-      dockerfile: Dockerfile.api
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:latest
     container_name: detecta-api2
     platform: linux/amd64
     networks:
