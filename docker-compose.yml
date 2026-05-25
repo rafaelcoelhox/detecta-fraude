@@ -28,7 +28,7 @@ services:
       resources:
         limits:
           cpus: "0.16"
-          memory: "30MB"
+          memory: "25MB"
 
   api1:
     image: ghcr.io/rafaelcoelhox/detecta-fraude-api:latest
@@ -87,4 +87,4 @@ volumes:
     driver_opts:
       type: tmpfs
       device: tmpfs
-      o: "size=10m,uid=0,gid=0,mode=0777"
+      o: "size=4m,uid=0,gid=0,mode=0777"
