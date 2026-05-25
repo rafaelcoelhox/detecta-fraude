@@ -1,4 +1,4 @@
-// Servidor HTTP single-threaded, edge-triggered epoll. Conexões TCP chegam
+// Servidor HTTP single-threaded com epoll. Conexões TCP chegam
 // como file descriptors enviados pelo LB via SCM_RIGHTS — a API não escuta
 // porta TCP.
 
@@ -8,9 +8,9 @@ use crate::response::Responses;
 use crate::vectorize::vectorize_q;
 use libc::{
     c_int, c_void, cmsghdr, epoll_create1, epoll_ctl, epoll_event, epoll_wait, iovec, msghdr,
-    recvmsg, EAGAIN, EINTR, EPOLLET, EPOLLIN, EPOLLOUT, EPOLLRDHUP, EPOLL_CTL_ADD, EPOLL_CTL_DEL,
-    EPOLL_CTL_MOD, F_GETFL, F_SETFL, MSG_CMSG_CLOEXEC, MSG_DONTWAIT, O_NONBLOCK, SCM_RIGHTS,
-    SOL_SOCKET,
+    recvmsg, EAGAIN, EINTR, EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, EPOLLRDHUP, EPOLL_CTL_ADD,
+    EPOLL_CTL_DEL, EPOLL_CTL_MOD, F_GETFL, F_SETFL, MSG_CMSG_CLOEXEC, MSG_DONTWAIT, O_NONBLOCK,
+    SCM_RIGHTS, SOL_SOCKET,
 };
 use std::io;
 use std::mem::MaybeUninit;
@@ -89,7 +89,7 @@ impl Server {
 
     fn register(&mut self, fd: c_int) -> io::Result<()> {
         let mut ev = epoll_event {
-            events: (EPOLLIN | EPOLLRDHUP | EPOLLET) as u32,
+            events: (EPOLLIN | EPOLLRDHUP) as u32,
             u64: fd as u64,
         };
         let r = unsafe { epoll_ctl(self.epfd, EPOLL_CTL_ADD, fd, &mut ev) };
@@ -141,7 +141,7 @@ impl Server {
                 if fd == self.uds_fd {
                     self.handle_uds()?;
                 } else {
-                    self.handle_conn(fd);
+                    self.handle_conn(fd, events[i].events);
                 }
             }
         }
@@ -173,9 +173,10 @@ impl Server {
         }
     }
 
-    fn handle_conn(&mut self, fd: c_int) {
+    fn handle_conn(&mut self, fd: c_int, events: u32) {
         let mut close = false;
-        loop {
+
+        if (events & (EPOLLIN as u32)) != 0 {
             let conn = match self.slot_mut(fd) {
                 Some(c) => c,
                 None => return,
@@ -183,34 +184,38 @@ impl Server {
             let space = CONN_BUF_CAP - conn.in_len;
             if space == 0 {
                 close = true;
-                break;
+            } else {
+                loop {
+                    let n = unsafe {
+                        libc::recv(
+                            fd,
+                            conn.in_buf.as_mut_ptr().add(conn.in_len) as *mut c_void,
+                            space,
+                            0,
+                        )
+                    };
+                    if n > 0 {
+                        conn.in_len += n as usize;
+                        break;
+                    }
+                    if n == 0 {
+                        close = true;
+                        break;
+                    }
+                    let err = io::Error::last_os_error();
+                    let code = err.raw_os_error().unwrap_or(0);
+                    if code == EAGAIN || code == libc::EWOULDBLOCK {
+                        break;
+                    }
+                    if code == EINTR {
+                        continue;
+                    }
+                    close = true;
+                    break;
+                }
             }
-            let n = unsafe {
-                libc::recv(
-                    fd,
-                    conn.in_buf.as_mut_ptr().add(conn.in_len) as *mut c_void,
-                    space,
-                    0,
-                )
-            };
-            if n > 0 {
-                conn.in_len += n as usize;
-                continue;
-            }
-            if n == 0 {
-                close = true;
-                break;
-            }
-            let err = io::Error::last_os_error();
-            let code = err.raw_os_error().unwrap_or(0);
-            if code == EAGAIN || code == libc::EWOULDBLOCK {
-                break;
-            }
-            if code == EINTR {
-                continue;
-            }
+        } else if (events & ((EPOLLERR | EPOLLHUP) as u32)) != 0 {
             close = true;
-            break;
         }
 
         if !close {
@@ -497,7 +502,7 @@ fn flush_write(fd: c_int, conn: &mut Conn) -> bool {
 }
 
 fn update_interest(epfd: c_int, fd: c_int, want_write: bool) {
-    let mut flags = EPOLLIN | EPOLLRDHUP | EPOLLET;
+    let mut flags = EPOLLIN | EPOLLRDHUP;
     if want_write {
         flags |= EPOLLOUT;
     }

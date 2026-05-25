@@ -4,10 +4,7 @@ fn build_response(score_str: &str, approved: bool) -> Vec<u8> {
         if approved { "true" } else { "false" },
         score_str,
     );
-    let header = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
-        body.len()
-    );
+    let header = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
     let mut v = Vec::with_capacity(header.len() + body.len());
     v.extend_from_slice(header.as_bytes());
     v.extend_from_slice(body.as_bytes());
@@ -28,9 +25,7 @@ impl Responses {
             let approved = i < 3;
             by_count[i] = build_response(SCORES[i], approved);
         }
-        let ready =
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok"
-                .to_vec();
+        let ready = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec();
         let fallback = build_response("0.0", true);
         Responses {
             by_count,

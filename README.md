@@ -12,7 +12,7 @@ Submissão para a [Rinha de Backend 2026](https://github.com/zanfranceschi/rinha
 ```
 
 - **`lb`** — load balancer minimalista em C. Abre TCP em `:9999`, `accept4`, alterna round-robin entre 4 Unix sockets (2 por API, um por worker) e entrega o FD via `SCM_RIGHTS`. Nunca lê bytes da conexão, nunca inspeciona payload.
-- **`api1` / `api2`** — Rust com 2 workers (threads independentes) cada. Cada worker tem seu próprio epoll edge-triggered, recebe FDs pelo seu UDS dedicado e serve HTTP/1.1 com respostas pré-renderizadas. Índice carregado via `mmap` (`MAP_POPULATE`).
+- **`api1` / `api2`** — Rust com 2 workers (threads independentes) cada. Cada worker tem seu próprio epoll, recebe FDs pelo seu UDS dedicado e serve HTTP/1.1 com respostas pré-renderizadas. Índice carregado via `mmap` (`MAP_POPULATE`).
 - **`index.bin`** — índice k-NN particionado sobre os 3 milhões de vetores quantizados em `i16` com escala 10 000. Cada partição tem uma KD-tree com bounding boxes por nó; a busca poda subárvores por lower-bound e varre folhas em layout SoA de 8 vetores com AVX2. O índice também usa parada antecipada quando os 5 vizinhos já estão suficientemente próximos.
 
 ## Decisão de detecção

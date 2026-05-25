@@ -28,8 +28,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.20"
-          memory: "30MB"
+          cpus: "0.10"
+          memory: "28MB"
 
   api1:
     image: rinha2026-detecta-fraude/api:latest
@@ -53,7 +53,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.40"
+          cpus: "0.45"
           memory: "160MB"
 
   api2:
@@ -78,7 +78,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.40"
+          cpus: "0.45"
           memory: "160MB"
 
 networks:
@@ -91,4 +91,4 @@ volumes:
     driver_opts:
       type: tmpfs
       device: tmpfs
-      o: "size=4m,uid=0,gid=0,mode=0777"
+      o: "size=1m,uid=0,gid=0,mode=0777"
