@@ -7,8 +7,8 @@ pub const LABEL_FRAUD: u8 = 1;
 pub const MAGIC: [u8; 8] = *b"DFKNN001";
 pub const VERSION: u32 = 4;
 pub const HEADER_SIZE: usize = 64;
-pub const PART_SIZE: usize = 76; 
-pub const NODE_SIZE: usize = 80; 
+pub const PART_SIZE: usize = 76;
+pub const NODE_SIZE: usize = 80;
 pub const LANES: usize = 8;
 pub const BLOCK_BYTES: usize = DIM * LANES * 2;
 pub const MCC_TABLE_SIZE: usize = 1024;
@@ -285,6 +285,33 @@ pub fn lower_bound_vec(
     acc
 }
 
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn lower_bound_vec_avx2(
+    q: &[i16; STORE_DIM],
+    min: &[i16; STORE_DIM],
+    max: &[i16; STORE_DIM],
+) -> i64 {
+    use std::arch::x86_64::*;
+
+    let qv = _mm256_loadu_si256(q.as_ptr() as *const __m256i);
+    let mn = _mm256_loadu_si256(min.as_ptr() as *const __m256i);
+    let mx = _mm256_loadu_si256(max.as_ptr() as *const __m256i);
+    let zero = _mm256_setzero_si256();
+    let below = _mm256_max_epi16(_mm256_sub_epi16(mn, qv), zero);
+    let above = _mm256_max_epi16(_mm256_sub_epi16(qv, mx), zero);
+    let diff = _mm256_max_epi16(below, above);
+    let real_dims = _mm256_set_epi16(0, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+    let diff = _mm256_and_si256(diff, real_dims);
+    let sq_pairs = _mm256_madd_epi16(diff, diff);
+    let lo = _mm256_cvtepi32_epi64(_mm256_castsi256_si128(sq_pairs));
+    let hi = _mm256_cvtepi32_epi64(_mm256_extracti128_si256(sq_pairs, 1));
+    let sum = _mm256_add_epi64(lo, hi);
+    let sum_hi = _mm256_extracti128_si256(sum, 1);
+    let sum_128 = _mm_add_epi64(_mm256_castsi256_si128(sum), sum_hi);
+    _mm_extract_epi64(sum_128, 0) + _mm_extract_epi64(sum_128, 1)
+}
+
 #[inline]
 fn read_partition(
     idx: &IndexReader,
@@ -375,7 +402,7 @@ unsafe fn fraud_count_avx2(idx: &IndexReader, query: &[i16; STORE_DIM]) -> u8 {
             continue;
         }
         let (_root, _len, min, max) = read_partition(idx, p as usize);
-        let lb = lower_bound_vec(query, &min, &max);
+        let lb = lower_bound_vec_avx2(query, &min, &max);
         if lb >= best_dists[K - 1] {
             continue;
         }
@@ -427,8 +454,8 @@ unsafe fn search_node_avx2(
             } else {
                 let (_, _, _, _, lmin, lmax) = read_node(idx, left as usize);
                 let (_, _, _, _, rmin, rmax) = read_node(idx, right as usize);
-                let lb = lower_bound_vec(query, &lmin, &lmax);
-                let rb = lower_bound_vec(query, &rmin, &rmax);
+                let lb = lower_bound_vec_avx2(query, &lmin, &lmax);
+                let rb = lower_bound_vec_avx2(query, &rmin, &rmax);
                 let (near, near_b, far, far_b) = if lb <= rb {
                     (left, lb, right, rb)
                 } else {
@@ -944,5 +971,26 @@ mod tests {
         let lo = [50i16; STORE_DIM];
         let hi = [200i16; STORE_DIM];
         assert_eq!(lower_bound_vec(&q, &lo, &hi), 0);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn lower_bound_avx2_matches_scalar() {
+        if !std::is_x86_feature_detected!("avx2") {
+            return;
+        }
+        let q = [
+            -10000, -5000, -1, 0, 1, 450, 900, 1200, 2049, 4096, 7000, 10000, 1234, -4321, 7777,
+            -8888,
+        ];
+        let lo = [
+            -9000, -6000, -10, 0, 3, 0, 1000, 1100, 1000, 4097, 6000, 8000, 1234, -5000, -1, -1,
+        ];
+        let hi = [
+            -8000, -4000, 10, 100, 4, 100, 1100, 1150, 2000, 5000, 6500, 9000, 2000, -4000, 1, 1,
+        ];
+        let scalar = lower_bound_vec(&q, &lo, &hi);
+        let avx2 = unsafe { lower_bound_vec_avx2(&q, &lo, &hi) };
+        assert_eq!(avx2, scalar);
     }
 }

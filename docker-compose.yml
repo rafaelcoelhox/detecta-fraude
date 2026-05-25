@@ -29,7 +29,7 @@ services:
           memory: "28MB"
 
   api1:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:latest
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:pgo-avx2-3157923
     container_name: detecta-api1
     platform: linux/amd64
     networks:
@@ -51,7 +51,7 @@ services:
           memory: "160MB"
 
   api2:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:latest
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:pgo-avx2-3157923
     container_name: detecta-api2
     platform: linux/amd64
     networks:
