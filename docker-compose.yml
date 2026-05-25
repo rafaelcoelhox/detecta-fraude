@@ -1,6 +1,9 @@
 services:
   lb:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-lb:latest
+    image: rinha2026-detecta-fraude/lb:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.lb
     container_name: detecta-lb
     platform: linux/amd64
     ports:
@@ -12,7 +15,7 @@ services:
     environment:
       LB_PORT: "9999"
       LB_BACKLOG: "8192"
-      API_SOCKETS: "/sockets/api1-w0.sock,/sockets/api2-w0.sock"
+      API_SOCKETS: "/sockets/api1-w0.sock,/sockets/api2-w0.sock,/sockets/api1-w1.sock,/sockets/api2-w1.sock"
     depends_on:
       api1:
         condition: service_started
@@ -25,19 +28,23 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.20"
-          memory: "20MB"
+          cpus: "0.10"
+          memory: "28MB"
 
   api1:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:latest
+    image: rinha2026-detecta-fraude/api:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.api
     container_name: detecta-api1
     platform: linux/amd64
-    network_mode: "none"
+    networks:
+      - rinha
     volumes:
       - sockets:/sockets
     environment:
       API_SOCKET_PREFIX: "/sockets/api1"
-      API_WORKERS: "1"
+      API_WORKERS: "2"
       INDEX_PATH: "/index/index.bin"
     logging:
       driver: none
@@ -46,19 +53,23 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.40"
-          memory: "165MB"
+          cpus: "0.45"
+          memory: "160MB"
 
   api2:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:latest
+    image: rinha2026-detecta-fraude/api:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.api
     container_name: detecta-api2
     platform: linux/amd64
-    network_mode: "none"
+    networks:
+      - rinha
     volumes:
       - sockets:/sockets
     environment:
       API_SOCKET_PREFIX: "/sockets/api2"
-      API_WORKERS: "1"
+      API_WORKERS: "2"
       INDEX_PATH: "/index/index.bin"
     logging:
       driver: none
@@ -67,8 +78,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.40"
-          memory: "165MB"
+          cpus: "0.45"
+          memory: "160MB"
 
 networks:
   rinha:
