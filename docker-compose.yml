@@ -1,6 +1,6 @@
 services:
   lb:
-    image: rinha2026-detecta-fraude/lb:latest
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-lb:latest
     build:
       context: .
       dockerfile: Dockerfile.lb
@@ -32,7 +32,7 @@ services:
           memory: "28MB"
 
   api1:
-    image: rinha2026-detecta-fraude/api:latest
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-lb:latest
     build:
       context: .
       dockerfile: Dockerfile.api
