@@ -315,6 +315,9 @@ impl IndexReader {
                 if self.is_ivf() {
                     return unsafe { fraud_count_ivf_index_avx2(self, query) };
                 }
+                if self.is_kd_pair() {
+                    return unsafe { fraud_count_pair_avx2(self, query) };
+                }
                 return unsafe { fraud_count_exact_avx2(self, query) };
             }
         }
@@ -332,6 +335,9 @@ impl IndexReader {
         #[cfg(target_arch = "x86_64")]
         {
             if std::is_x86_feature_detected!("avx2") {
+                if self.is_kd_pair() {
+                    return unsafe { fraud_count_pair_avx2(self, query) };
+                }
                 return unsafe { fraud_count_exact_avx2(self, query) };
             }
         }
@@ -684,8 +690,10 @@ unsafe fn scan_ivf_cluster_avx2(
         let dists = distance_ivf_block8(vectors_ptr, block_off_i16, q_pairs);
         let lane_count = (total_len - i * LANES).min(LANES);
         for (lane, &dist) in dists.iter().enumerate().take(lane_count) {
-            let label = *labels_ptr.add(labels_base + lane);
-            insert_best(dist, label, best_dists, best_labels);
+            if dist < best_dists[K - 1] {
+                let label = *labels_ptr.add(labels_base + lane);
+                insert_best(dist, label, best_dists, best_labels);
+            }
         }
     }
 }
@@ -788,10 +796,180 @@ fn scan_ivf_cluster_scalar(
                 let diff = v as i64 - query[d] as i64;
                 dist += diff * diff;
             }
-            let label = unsafe { *labels_ptr.add(block_idx * LANES + lane) };
-            insert_best(dist, label, best_dists, best_labels);
+            if dist < best_dists[K - 1] {
+                let label = unsafe { *labels_ptr.add(block_idx * LANES + lane) };
+                insert_best(dist, label, best_dists, best_labels);
+            }
         }
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn query_pairs_avx2(query: &[i16; STORE_DIM]) -> [std::arch::x86_64::__m256i; IVF_PAIRS] {
+    use std::arch::x86_64::*;
+
+    let mut q_pairs = [_mm256_setzero_si256(); IVF_PAIRS];
+    for p in 0..IVF_PAIRS {
+        let lo = query[p * 2] as u16 as u32;
+        let hi = query[p * 2 + 1] as u16 as u32;
+        q_pairs[p] = _mm256_set1_epi32((lo | (hi << 16)) as i32);
+    }
+    q_pairs
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn fraud_count_pair_avx2(idx: &IndexReader, query: &[i16; STORE_DIM]) -> u8 {
+    let q_pairs = query_pairs_avx2(query);
+    let mut best_dists = [i64::MAX; K];
+    let mut best_labels = [0u8; K];
+
+    let key = partition_key(query);
+    let primary = idx.part_by_key(key);
+    if primary >= 0 {
+        let (root, _len, _min, _max) = read_partition(idx, primary as usize);
+        if search_node_pair_avx2(
+            idx,
+            root,
+            0,
+            query,
+            &q_pairs,
+            &mut best_dists,
+            &mut best_labels,
+        ) {
+            return sum_labels(&best_labels);
+        }
+    }
+
+    let mut probes = [(0i32, 0i64); 256];
+    let mut n = 0usize;
+    for p in 0..idx.part_count() as i32 {
+        if p == primary {
+            continue;
+        }
+        let (_root, _len, min, max) = read_partition(idx, p as usize);
+        let lb = lower_bound_vec(query, &min, &max);
+        if lb >= best_dists[K - 1] {
+            continue;
+        }
+        probes[n] = (p, lb);
+        n += 1;
+    }
+    probes[..n].sort_unstable_by_key(|&(_, lb)| lb);
+
+    for &(part_idx, lb) in &probes[..n] {
+        if lb >= best_dists[K - 1] {
+            break;
+        }
+        let (root, _len, _min, _max) = read_partition(idx, part_idx as usize);
+        if search_node_pair_avx2(
+            idx,
+            root,
+            lb,
+            query,
+            &q_pairs,
+            &mut best_dists,
+            &mut best_labels,
+        ) {
+            break;
+        }
+    }
+
+    sum_labels(&best_labels)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn search_node_pair_avx2(
+    idx: &IndexReader,
+    root: i32,
+    root_bound: i64,
+    query: &[i16; STORE_DIM],
+    q_pairs: &[std::arch::x86_64::__m256i; IVF_PAIRS],
+    best_dists: &mut [i64; K],
+    best_labels: &mut [u8; K],
+) -> bool {
+    if root < 0 || root as u32 >= idx.node_count() {
+        return false;
+    }
+
+    let mut stack_node = [0i32; 128];
+    let mut stack_bound = [0i64; 128];
+    let mut sp = 0usize;
+    let mut current = root;
+    let mut current_bound = root_bound;
+
+    loop {
+        if current_bound < best_dists[K - 1] {
+            let (left, right, start, len, _lo, _hi) = read_node(idx, current as usize);
+            if left < 0 {
+                if scan_leaf_pair_avx2(idx, start, len, q_pairs, best_dists, best_labels) {
+                    return true;
+                }
+            } else {
+                let (_, _, _, _, lmin, lmax) = read_node(idx, left as usize);
+                let (_, _, _, _, rmin, rmax) = read_node(idx, right as usize);
+                let lb = lower_bound_vec(query, &lmin, &lmax);
+                let rb = lower_bound_vec(query, &rmin, &rmax);
+                let (near, near_b, far, far_b) = if lb <= rb {
+                    (left, lb, right, rb)
+                } else {
+                    (right, rb, left, lb)
+                };
+                if far_b < best_dists[K - 1] && sp < stack_node.len() {
+                    stack_node[sp] = far;
+                    stack_bound[sp] = far_b;
+                    sp += 1;
+                }
+                current = near;
+                current_bound = near_b;
+                continue;
+            }
+        }
+
+        if sp == 0 {
+            break;
+        }
+        sp -= 1;
+        current = stack_node[sp];
+        current_bound = stack_bound[sp];
+    }
+    early_done(best_dists)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn scan_leaf_pair_avx2(
+    idx: &IndexReader,
+    start_block: i32,
+    len: i32,
+    q_pairs: &[std::arch::x86_64::__m256i; IVF_PAIRS],
+    best_dists: &mut [i64; K],
+    best_labels: &mut [u8; K],
+) -> bool {
+    let blocks = (len as usize).div_ceil(LANES);
+    let labels_ptr = idx.labels_ptr();
+    let vectors_ptr = idx.vectors_ptr();
+    let total_len = len as usize;
+
+    for b in 0..blocks {
+        let block_idx = start_block as usize + b;
+        let labels_base = block_idx * LANES;
+        let block_off_i16 = block_idx * DIM * LANES;
+        let dists = distance_pair_block8(vectors_ptr, block_off_i16, q_pairs);
+        let lane_count = (total_len - b * LANES).min(LANES);
+        for (lane, &d) in dists.iter().enumerate().take(lane_count) {
+            if d < best_dists[K - 1] {
+                let label = *labels_ptr.add(labels_base + lane);
+                insert_best(d, label, best_dists, best_labels);
+            }
+        }
+        if early_done(best_dists) {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -940,8 +1118,10 @@ unsafe fn scan_leaf_avx2(
         };
         let lane_count = (total_len - b * LANES).min(LANES);
         for (lane, &d) in dists.iter().enumerate().take(lane_count) {
-            let label = *labels_ptr.add(labels_base + lane);
-            insert_best(d, label, best_dists, best_labels);
+            if d < best_dists[K - 1] {
+                let label = *labels_ptr.add(labels_base + lane);
+                insert_best(d, label, best_dists, best_labels);
+            }
         }
         if early_done(best_dists) {
             return true;
@@ -1103,8 +1283,10 @@ fn scan_leaf_scalar(
                 let diff = v as i64 - query[d] as i64;
                 dist += diff * diff;
             }
-            let label = unsafe { *labels_ptr.add(block_idx * LANES + lane) };
-            insert_best(dist, label, best_dists, best_labels);
+            if dist < best_dists[K - 1] {
+                let label = unsafe { *labels_ptr.add(block_idx * LANES + lane) };
+                insert_best(dist, label, best_dists, best_labels);
+            }
         }
         if early_done(best_dists) {
             return true;
