@@ -4,46 +4,30 @@ WORKDIR /src
 
 ENV CARGO_HOME=/usr/local/cargo
 ENV RUSTFLAGS="-C target-cpu=haswell -C target-feature=+avx2,+fma,+bmi2"
-ARG PGO_BENCH_ITERS=200000
-
-RUN rustup component add llvm-tools-preview && \
-    ln -s "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-profdata" /usr/local/bin/llvm-profdata
 
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src/bin && \
     echo "fn main(){}" > src/bin/fraud-api.rs && \
     echo "fn main(){}" > src/bin/index-builder.rs && \
     echo "fn main(){}" > src/bin/eval-preview.rs && \
-    echo "fn main(){}" > src/bin/bench.rs && \
     echo "" > src/lib.rs && \
     cargo build --release --bin fraud-api && \
     cargo build --release --features builder --bin index-builder && \
     rm -rf src target/release/deps/detecta_fraude* target/release/deps/fraud_api* target/release/deps/index_builder* \
-        target/release/fraud-api target/release/index-builder target/release/bench
+        target/release/fraud-api target/release/index-builder
 
 COPY src ./src
 RUN touch src/lib.rs src/bin/*.rs && \
+    cargo build --release --bin fraud-api && \
     cargo build --release --features builder --bin index-builder
 
 COPY resources/references.json.gz /tmp/references.json.gz
 RUN /src/target/release/index-builder /tmp/references.json.gz /tmp/index.bin && \
     rm /tmp/references.json.gz
 
-RUN rm -rf /tmp/pgo /tmp/target-pgo-gen /tmp/target-pgo-use && \
-    mkdir -p /tmp/pgo && \
-    CARGO_TARGET_DIR=/tmp/target-pgo-gen \
-    RUSTFLAGS="-C target-cpu=haswell -C target-feature=+avx2,+fma,+bmi2 -C profile-generate=/tmp/pgo" \
-    cargo build --release --bin fraud-api --bin bench && \
-    LLVM_PROFILE_FILE="/tmp/pgo/fraud-api-%m.profraw" \
-    /tmp/target-pgo-gen/release/bench /tmp/index.bin "${PGO_BENCH_ITERS}" && \
-    llvm-profdata merge -o /tmp/merged.profdata /tmp/pgo && \
-    CARGO_TARGET_DIR=/tmp/target-pgo-use \
-    RUSTFLAGS="-C target-cpu=haswell -C target-feature=+avx2,+fma,+bmi2 -C profile-use=/tmp/merged.profdata" \
-    cargo build --release --bin fraud-api
-
 
 FROM gcr.io/distroless/cc-debian12:latest
-COPY --from=rust-builder /tmp/target-pgo-use/release/fraud-api /usr/local/bin/fraud-api
+COPY --from=rust-builder /src/target/release/fraud-api /usr/local/bin/fraud-api
 COPY --from=rust-builder /tmp/index.bin /index/index.bin
 ENV INDEX_PATH=/index/index.bin
 ENTRYPOINT ["/usr/local/bin/fraud-api"]

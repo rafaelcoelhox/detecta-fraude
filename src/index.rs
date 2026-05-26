@@ -6,11 +6,14 @@ pub const LABEL_FRAUD: u8 = 1;
 
 pub const MAGIC: [u8; 8] = *b"DFKNN001";
 pub const VERSION: u32 = 4;
+pub const IVF_VERSION: u32 = 5;
+pub const KD_PAIR_VERSION: u32 = 6;
 pub const HEADER_SIZE: usize = 64;
 pub const PART_SIZE: usize = 76;
 pub const NODE_SIZE: usize = 80;
 pub const LANES: usize = 8;
 pub const BLOCK_BYTES: usize = DIM * LANES * 2;
+pub const IVF_PAIRS: usize = DIM / 2;
 pub const MCC_TABLE_SIZE: usize = 1024;
 pub const DEFAULT_LEAF_SIZE: usize = 128;
 pub const EARLY_DISTANCE_MILLI: i32 = 140;
@@ -18,6 +21,12 @@ pub const EARLY_DISTANCE_LIMIT: i64 = {
     let v = (SCALE as i32 * EARLY_DISTANCE_MILLI / 1000) as i64;
     v * v
 };
+pub const IVF_CLUSTER_COUNT: usize = 4096;
+pub const IVF_NPROBE: usize = 12;
+pub const IVF_REPAIR_CAND_LIMIT: usize = 1024;
+pub const IVF_REPAIR_MIN: u8 = 1;
+pub const IVF_REPAIR_MAX: u8 = 4;
+pub const IVF_CONFIDENT_DISTANCE_LIMIT: i64 = EARLY_DISTANCE_LIMIT;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -37,6 +46,52 @@ pub struct Header {
 
 const _: () = assert!(std::mem::size_of::<Header>() == HEADER_SIZE);
 
+#[derive(Clone, Copy)]
+struct IvfOffsets {
+    centroids: usize,
+    bbox_min: usize,
+    bbox_max: usize,
+    offsets: usize,
+    counts: usize,
+    vectors: usize,
+    labels: usize,
+    mcc_table: usize,
+    end: usize,
+}
+
+#[inline]
+fn align_to(v: usize, align: usize) -> usize {
+    (v + align - 1) & !(align - 1)
+}
+
+fn ivf_offsets(cluster_count: usize, block_count: usize) -> IvfOffsets {
+    let centroids = HEADER_SIZE;
+    let bbox_min = centroids + cluster_count * STORE_DIM * 2;
+    let bbox_max = bbox_min + cluster_count * STORE_DIM * 2;
+    let offsets = align_to(bbox_max + cluster_count * STORE_DIM * 2, 4);
+    let counts = offsets + (cluster_count + 1) * 4;
+    let vectors = align_to(counts + cluster_count * 4, 2);
+    let labels = vectors + block_count * BLOCK_BYTES;
+    let mcc_table = labels + block_count * LANES;
+    let end = mcc_table + MCC_TABLE_SIZE * 2;
+    IvfOffsets {
+        centroids,
+        bbox_min,
+        bbox_max,
+        offsets,
+        counts,
+        vectors,
+        labels,
+        mcc_table,
+        end,
+    }
+}
+
+#[inline(always)]
+fn ivf_pair_offset(d: usize, lane: usize) -> usize {
+    (d / 2) * LANES * 2 + lane * 2 + (d & 1)
+}
+
 pub struct IndexReader {
     _map: memmap2::Mmap,
     base: *const u8,
@@ -46,6 +101,11 @@ pub struct IndexReader {
     vectors_off: usize,
     labels_off: usize,
     mcc_table_off: usize,
+    ivf_centroids_off: usize,
+    ivf_min_off: usize,
+    ivf_max_off: usize,
+    ivf_offsets_off: usize,
+    ivf_counts_off: usize,
     header: Header,
     part_by_key: [i32; 256],
 }
@@ -64,7 +124,11 @@ impl IndexReader {
         }
 
         let header: Header = unsafe { std::ptr::read_unaligned(base as *const Header) };
-        if header.magic != MAGIC || header.version != VERSION {
+        if header.magic != MAGIC
+            || (header.version != VERSION
+                && header.version != IVF_VERSION
+                && header.version != KD_PAIR_VERSION)
+        {
             return Err(invalid("bad magic/version"));
         }
         if header.scale != SCALE as u32
@@ -74,24 +138,65 @@ impl IndexReader {
             return Err(invalid("dim/scale mismatch"));
         }
 
-        let partitions_off = HEADER_SIZE;
-        let nodes_off = partitions_off + header.part_count as usize * PART_SIZE;
-        let vectors_off = nodes_off + header.node_count as usize * NODE_SIZE;
-        let labels_off = vectors_off + header.block_count as usize * BLOCK_BYTES;
-        let mcc_table_off = labels_off + header.block_count as usize * LANES;
-        let end = mcc_table_off + MCC_TABLE_SIZE * 2;
-        if end != len || header.mcc_table_offset as usize != mcc_table_off {
-            return Err(invalid("index size mismatch"));
-        }
-
         let mut part_by_key = [-1i32; 256];
-        for i in 0..header.part_count as usize {
-            let off = partitions_off + i * PART_SIZE;
-            let key = read_u32_at(base, off);
-            if (key as usize) < part_by_key.len() {
-                part_by_key[key as usize] = i as i32;
+        let (
+            partitions_off,
+            nodes_off,
+            vectors_off,
+            labels_off,
+            mcc_table_off,
+            ivf_centroids_off,
+            ivf_min_off,
+            ivf_max_off,
+            ivf_offsets_off,
+            ivf_counts_off,
+        ) = if header.version == IVF_VERSION {
+            let layout = ivf_offsets(header.part_count as usize, header.block_count as usize);
+            if layout.end != len || header.mcc_table_offset as usize != layout.mcc_table {
+                return Err(invalid("ivf index size mismatch"));
             }
-        }
+            (
+                0,
+                0,
+                layout.vectors,
+                layout.labels,
+                layout.mcc_table,
+                layout.centroids,
+                layout.bbox_min,
+                layout.bbox_max,
+                layout.offsets,
+                layout.counts,
+            )
+        } else {
+            let partitions_off = HEADER_SIZE;
+            let nodes_off = partitions_off + header.part_count as usize * PART_SIZE;
+            let vectors_off = nodes_off + header.node_count as usize * NODE_SIZE;
+            let labels_off = vectors_off + header.block_count as usize * BLOCK_BYTES;
+            let mcc_table_off = labels_off + header.block_count as usize * LANES;
+            let end = mcc_table_off + MCC_TABLE_SIZE * 2;
+            if end != len || header.mcc_table_offset as usize != mcc_table_off {
+                return Err(invalid("index size mismatch"));
+            }
+            for i in 0..header.part_count as usize {
+                let off = partitions_off + i * PART_SIZE;
+                let key = read_u32_at(base, off);
+                if (key as usize) < part_by_key.len() {
+                    part_by_key[key as usize] = i as i32;
+                }
+            }
+            (
+                partitions_off,
+                nodes_off,
+                vectors_off,
+                labels_off,
+                mcc_table_off,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )
+        };
 
         let idx = IndexReader {
             _map: map,
@@ -102,6 +207,11 @@ impl IndexReader {
             vectors_off,
             labels_off,
             mcc_table_off,
+            ivf_centroids_off,
+            ivf_min_off,
+            ivf_max_off,
+            ivf_offsets_off,
+            ivf_counts_off,
             header,
             part_by_key,
         };
@@ -158,6 +268,41 @@ impl IndexReader {
     }
 
     #[inline]
+    fn ivf_centroids_ptr(&self) -> *const u8 {
+        unsafe { self.base.add(self.ivf_centroids_off) }
+    }
+
+    #[inline]
+    fn ivf_min_ptr(&self) -> *const u8 {
+        unsafe { self.base.add(self.ivf_min_off) }
+    }
+
+    #[inline]
+    fn ivf_max_ptr(&self) -> *const u8 {
+        unsafe { self.base.add(self.ivf_max_off) }
+    }
+
+    #[inline]
+    fn is_ivf(&self) -> bool {
+        self.header.version == IVF_VERSION
+    }
+
+    #[inline]
+    fn is_kd_pair(&self) -> bool {
+        self.header.version == KD_PAIR_VERSION
+    }
+
+    #[inline]
+    fn ivf_offset(&self, cluster: usize) -> u32 {
+        read_u32_at(self.base, self.ivf_offsets_off + cluster * 4)
+    }
+
+    #[inline]
+    fn ivf_count(&self, cluster: usize) -> u32 {
+        read_u32_at(self.base, self.ivf_counts_off + cluster * 4)
+    }
+
+    #[inline]
     fn part_by_key(&self, key: u32) -> i32 {
         self.part_by_key[(key & 0xff) as usize]
     }
@@ -167,7 +312,27 @@ impl IndexReader {
         #[cfg(target_arch = "x86_64")]
         {
             if std::is_x86_feature_detected!("avx2") {
-                return unsafe { fraud_count_avx2(self, query) };
+                if self.is_ivf() {
+                    return unsafe { fraud_count_ivf_index_avx2(self, query) };
+                }
+                return unsafe { fraud_count_exact_avx2(self, query) };
+            }
+        }
+        if self.is_ivf() {
+            return fraud_count_ivf_index_scalar(self, query);
+        }
+        fraud_count_scalar(self, query)
+    }
+
+    #[inline]
+    pub fn fraud_count_exact(&self, query: &[i16; STORE_DIM]) -> u8 {
+        if self.is_ivf() {
+            return self.fraud_count(query);
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            if std::is_x86_feature_detected!("avx2") {
+                return unsafe { fraud_count_exact_avx2(self, query) };
             }
         }
         fraud_count_scalar(self, query)
@@ -285,33 +450,6 @@ pub fn lower_bound_vec(
     acc
 }
 
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn lower_bound_vec_avx2(
-    q: &[i16; STORE_DIM],
-    min: &[i16; STORE_DIM],
-    max: &[i16; STORE_DIM],
-) -> i64 {
-    use std::arch::x86_64::*;
-
-    let qv = _mm256_loadu_si256(q.as_ptr() as *const __m256i);
-    let mn = _mm256_loadu_si256(min.as_ptr() as *const __m256i);
-    let mx = _mm256_loadu_si256(max.as_ptr() as *const __m256i);
-    let zero = _mm256_setzero_si256();
-    let below = _mm256_max_epi16(_mm256_sub_epi16(mn, qv), zero);
-    let above = _mm256_max_epi16(_mm256_sub_epi16(qv, mx), zero);
-    let diff = _mm256_max_epi16(below, above);
-    let real_dims = _mm256_set_epi16(0, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
-    let diff = _mm256_and_si256(diff, real_dims);
-    let sq_pairs = _mm256_madd_epi16(diff, diff);
-    let lo = _mm256_cvtepi32_epi64(_mm256_castsi256_si128(sq_pairs));
-    let hi = _mm256_cvtepi32_epi64(_mm256_extracti128_si256(sq_pairs, 1));
-    let sum = _mm256_add_epi64(lo, hi);
-    let sum_hi = _mm256_extracti128_si256(sum, 1);
-    let sum_128 = _mm_add_epi64(_mm256_castsi256_si128(sum), sum_hi);
-    _mm_extract_epi64(sum_128, 0) + _mm_extract_epi64(sum_128, 1)
-}
-
 #[inline]
 fn read_partition(
     idx: &IndexReader,
@@ -382,7 +520,283 @@ fn early_done(best: &[i64; K]) -> bool {
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn fraud_count_avx2(idx: &IndexReader, query: &[i16; STORE_DIM]) -> u8 {
+unsafe fn distance_qv_avx2(a: &[i16; STORE_DIM], b: &[i16; STORE_DIM]) -> i64 {
+    use std::arch::x86_64::*;
+
+    let av = _mm256_loadu_si256(a.as_ptr() as *const __m256i);
+    let bv = _mm256_loadu_si256(b.as_ptr() as *const __m256i);
+    let diff = _mm256_sub_epi16(av, bv);
+    let sq_pairs = _mm256_madd_epi16(diff, diff);
+    let lo = _mm256_cvtepi32_epi64(_mm256_castsi256_si128(sq_pairs));
+    let hi = _mm256_cvtepi32_epi64(_mm256_extracti128_si256(sq_pairs, 1));
+    let sum = _mm256_add_epi64(lo, hi);
+    let sum_hi = _mm256_extracti128_si256(sum, 1);
+    let sum_128 = _mm_add_epi64(_mm256_castsi256_si128(sum), sum_hi);
+    _mm_extract_epi64(sum_128, 0) + _mm_extract_epi64(sum_128, 1)
+}
+
+#[inline(always)]
+fn distance_qv_scalar(a: &[i16; STORE_DIM], b: &[i16; STORE_DIM]) -> i64 {
+    let mut acc = 0i64;
+    for d in 0..DIM {
+        let diff = a[d] as i64 - b[d] as i64;
+        acc += diff * diff;
+    }
+    acc
+}
+
+#[inline(always)]
+fn insert_cluster_probe<const N: usize>(
+    cluster: usize,
+    dist: i64,
+    probes: &mut [(usize, i64); N],
+    count: &mut usize,
+) {
+    if *count == N && dist >= probes[N - 1].1 {
+        return;
+    }
+    let mut pos = if *count < N {
+        let pos = *count;
+        *count += 1;
+        pos
+    } else {
+        N - 1
+    };
+    while pos > 0 && dist < probes[pos - 1].1 {
+        probes[pos] = probes[pos - 1];
+        pos -= 1;
+    }
+    probes[pos] = (cluster, dist);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn fraud_count_ivf_index_avx2(idx: &IndexReader, query: &[i16; STORE_DIM]) -> u8 {
+    use std::arch::x86_64::*;
+
+    let mut best_dists = [i64::MAX; K];
+    let mut best_labels = [0u8; K];
+    let mut probes = [(usize::MAX, i64::MAX); IVF_NPROBE];
+    let mut probe_count = 0usize;
+    let centroids = idx.ivf_centroids_ptr();
+    let mut q_pairs = [_mm256_setzero_si256(); IVF_PAIRS];
+    for p in 0..IVF_PAIRS {
+        let lo = query[p * 2] as u16 as u32;
+        let hi = query[p * 2 + 1] as u16 as u32;
+        q_pairs[p] = _mm256_set1_epi32((lo | (hi << 16)) as i32);
+    }
+
+    for c in 0..idx.part_count() as usize {
+        let centroid = read_qv(centroids, c * STORE_DIM * 2);
+        let dist = distance_qv_avx2(query, &centroid);
+        insert_cluster_probe(c, dist, &mut probes, &mut probe_count);
+    }
+
+    for &(cluster, _dist) in &probes[..probe_count] {
+        scan_ivf_cluster_avx2(idx, cluster, &q_pairs, &mut best_dists, &mut best_labels);
+    }
+
+    let mut count = sum_labels(&best_labels);
+    if (IVF_REPAIR_MIN..=IVF_REPAIR_MAX).contains(&count)
+        || best_dists[K - 1] > IVF_CONFIDENT_DISTANCE_LIMIT
+    {
+        repair_ivf_avx2(
+            idx,
+            query,
+            &q_pairs,
+            &probes[..probe_count],
+            &mut best_dists,
+            &mut best_labels,
+        );
+        count = sum_labels(&best_labels);
+    }
+    count
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn repair_ivf_avx2(
+    idx: &IndexReader,
+    query: &[i16; STORE_DIM],
+    q_pairs: &[std::arch::x86_64::__m256i; IVF_PAIRS],
+    skip: &[(usize, i64)],
+    best_dists: &mut [i64; K],
+    best_labels: &mut [u8; K],
+) {
+    let mut cands = [(usize::MAX, i64::MAX); IVF_REPAIR_CAND_LIMIT];
+    let mut cand_count = 0usize;
+    let min_ptr = idx.ivf_min_ptr();
+    let max_ptr = idx.ivf_max_ptr();
+
+    for c in 0..idx.part_count() as usize {
+        let mut seen = false;
+        for &(probe, _dist) in skip {
+            if probe == c {
+                seen = true;
+                break;
+            }
+        }
+        if seen || idx.ivf_count(c) == 0 {
+            continue;
+        }
+        let min = read_qv(min_ptr, c * STORE_DIM * 2);
+        let max = read_qv(max_ptr, c * STORE_DIM * 2);
+        let lb = lower_bound_vec(query, &min, &max);
+        if lb < best_dists[K - 1] {
+            insert_cluster_probe(c, lb, &mut cands, &mut cand_count);
+        }
+    }
+
+    for &(cluster, lb) in &cands[..cand_count] {
+        if lb >= best_dists[K - 1] {
+            break;
+        }
+        scan_ivf_cluster_avx2(idx, cluster, q_pairs, best_dists, best_labels);
+        let count = sum_labels(best_labels);
+        if count < IVF_REPAIR_MIN || count > IVF_REPAIR_MAX {
+            break;
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn scan_ivf_cluster_avx2(
+    idx: &IndexReader,
+    cluster: usize,
+    q_pairs: &[std::arch::x86_64::__m256i; IVF_PAIRS],
+    best_dists: &mut [i64; K],
+    best_labels: &mut [u8; K],
+) {
+    let start_block = idx.ivf_offset(cluster) as usize;
+    let end_block = idx.ivf_offset(cluster + 1) as usize;
+    let total_len = idx.ivf_count(cluster) as usize;
+    if total_len == 0 {
+        return;
+    }
+
+    let labels_ptr = idx.labels_ptr();
+    let vectors_ptr = idx.vectors_ptr();
+
+    for (i, block_idx) in (start_block..end_block).enumerate() {
+        let labels_base = block_idx * LANES;
+        let block_off_i16 = block_idx * DIM * LANES;
+        let dists = distance_ivf_block8(vectors_ptr, block_off_i16, q_pairs);
+        let lane_count = (total_len - i * LANES).min(LANES);
+        for (lane, &dist) in dists.iter().enumerate().take(lane_count) {
+            let label = *labels_ptr.add(labels_base + lane);
+            insert_best(dist, label, best_dists, best_labels);
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn distance_ivf_block8(
+    vectors: *const i16,
+    block_off_i16: usize,
+    q_pairs: &[std::arch::x86_64::__m256i; IVF_PAIRS],
+) -> [i64; LANES] {
+    use std::arch::x86_64::*;
+
+    let base = vectors.add(block_off_i16);
+    let mut acc = _mm256_setzero_si256();
+    for p in 0..IVF_PAIRS {
+        let packed = _mm256_loadu_si256(base.add(p * LANES * 2) as *const __m256i);
+        let diff = _mm256_sub_epi16(q_pairs[p], packed);
+        acc = _mm256_add_epi32(acc, _mm256_madd_epi16(diff, diff));
+    }
+    let mut vals = [0u32; LANES];
+    _mm256_storeu_si256(vals.as_mut_ptr() as *mut __m256i, acc);
+    [
+        vals[0] as i64,
+        vals[1] as i64,
+        vals[2] as i64,
+        vals[3] as i64,
+        vals[4] as i64,
+        vals[5] as i64,
+        vals[6] as i64,
+        vals[7] as i64,
+    ]
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn distance_pair_block8(
+    vectors: *const i16,
+    block_off_i16: usize,
+    q_pairs: &[std::arch::x86_64::__m256i; IVF_PAIRS],
+) -> [i64; LANES] {
+    use std::arch::x86_64::*;
+
+    let base = vectors.add(block_off_i16);
+    let mut acc_lo = _mm256_setzero_si256();
+    let mut acc_hi = _mm256_setzero_si256();
+    for p in 0..IVF_PAIRS {
+        let packed = _mm256_loadu_si256(base.add(p * LANES * 2) as *const __m256i);
+        let diff = _mm256_sub_epi16(q_pairs[p], packed);
+        let sq_pairs = _mm256_madd_epi16(diff, diff);
+        let sq_lo = _mm256_castsi256_si128(sq_pairs);
+        let sq_hi = _mm256_extracti128_si256(sq_pairs, 1);
+        acc_lo = _mm256_add_epi64(acc_lo, _mm256_cvtepi32_epi64(sq_lo));
+        acc_hi = _mm256_add_epi64(acc_hi, _mm256_cvtepi32_epi64(sq_hi));
+    }
+
+    let mut out = [0i64; LANES];
+    _mm256_storeu_si256(out.as_mut_ptr() as *mut __m256i, acc_lo);
+    _mm256_storeu_si256(out.as_mut_ptr().add(4) as *mut __m256i, acc_hi);
+    out
+}
+
+fn fraud_count_ivf_index_scalar(idx: &IndexReader, query: &[i16; STORE_DIM]) -> u8 {
+    let mut best_dists = [i64::MAX; K];
+    let mut best_labels = [0u8; K];
+    let mut probes = [(usize::MAX, i64::MAX); IVF_NPROBE];
+    let mut probe_count = 0usize;
+    let centroids = idx.ivf_centroids_ptr();
+
+    for c in 0..idx.part_count() as usize {
+        let centroid = read_qv(centroids, c * STORE_DIM * 2);
+        let dist = distance_qv_scalar(query, &centroid);
+        insert_cluster_probe(c, dist, &mut probes, &mut probe_count);
+    }
+    for &(cluster, _dist) in &probes[..probe_count] {
+        scan_ivf_cluster_scalar(idx, cluster, query, &mut best_dists, &mut best_labels);
+    }
+    sum_labels(&best_labels)
+}
+
+fn scan_ivf_cluster_scalar(
+    idx: &IndexReader,
+    cluster: usize,
+    query: &[i16; STORE_DIM],
+    best_dists: &mut [i64; K],
+    best_labels: &mut [u8; K],
+) {
+    let start_block = idx.ivf_offset(cluster) as usize;
+    let end_block = idx.ivf_offset(cluster + 1) as usize;
+    let total_len = idx.ivf_count(cluster) as usize;
+    let labels_ptr = idx.labels_ptr();
+    let vectors_ptr = idx.vectors_ptr();
+    for (i, block_idx) in (start_block..end_block).enumerate() {
+        let lane_count = (total_len - i * LANES).min(LANES);
+        for lane in 0..lane_count {
+            let mut dist = 0i64;
+            let block_off = block_idx * DIM * LANES;
+            for d in 0..DIM {
+                let v = unsafe { *vectors_ptr.add(block_off + ivf_pair_offset(d, lane)) };
+                let diff = v as i64 - query[d] as i64;
+                dist += diff * diff;
+            }
+            let label = unsafe { *labels_ptr.add(block_idx * LANES + lane) };
+            insert_best(dist, label, best_dists, best_labels);
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn fraud_count_exact_avx2(idx: &IndexReader, query: &[i16; STORE_DIM]) -> u8 {
     let mut best_dists = [i64::MAX; K];
     let mut best_labels = [0u8; K];
 
@@ -402,7 +816,7 @@ unsafe fn fraud_count_avx2(idx: &IndexReader, query: &[i16; STORE_DIM]) -> u8 {
             continue;
         }
         let (_root, _len, min, max) = read_partition(idx, p as usize);
-        let lb = lower_bound_vec_avx2(query, &min, &max);
+        let lb = lower_bound_vec(query, &min, &max);
         if lb >= best_dists[K - 1] {
             continue;
         }
@@ -454,8 +868,8 @@ unsafe fn search_node_avx2(
             } else {
                 let (_, _, _, _, lmin, lmax) = read_node(idx, left as usize);
                 let (_, _, _, _, rmin, rmax) = read_node(idx, right as usize);
-                let lb = lower_bound_vec_avx2(query, &lmin, &lmax);
-                let rb = lower_bound_vec_avx2(query, &rmin, &rmax);
+                let lb = lower_bound_vec(query, &lmin, &lmax);
+                let rb = lower_bound_vec(query, &rmin, &rmax);
                 let (near, near_b, far, far_b) = if lb <= rb {
                     (left, lb, right, rb)
                 } else {
@@ -498,9 +912,20 @@ unsafe fn scan_leaf_avx2(
     let labels_ptr = idx.labels_ptr();
     let vectors_ptr = idx.vectors_ptr();
 
+    let pair_layout = idx.is_kd_pair();
     let mut q_broadcast = [_mm256_setzero_si256(); DIM];
-    for d in 0..DIM {
-        q_broadcast[d] = _mm256_set1_epi32(query[d] as i32);
+    if !pair_layout {
+        for d in 0..DIM {
+            q_broadcast[d] = _mm256_set1_epi32(query[d] as i32);
+        }
+    }
+    let mut q_pairs = [_mm256_setzero_si256(); IVF_PAIRS];
+    if pair_layout {
+        for p in 0..IVF_PAIRS {
+            let lo = query[p * 2] as u16 as u32;
+            let hi = query[p * 2 + 1] as u16 as u32;
+            q_pairs[p] = _mm256_set1_epi32((lo | (hi << 16)) as i32);
+        }
     }
 
     let total_len = len as usize;
@@ -508,7 +933,11 @@ unsafe fn scan_leaf_avx2(
         let block_idx = start_block as usize + b;
         let labels_base = block_idx * LANES;
         let block_off_i16 = block_idx * DIM * LANES;
-        let dists = distance_block8(vectors_ptr, block_off_i16, &q_broadcast);
+        let dists = if pair_layout {
+            distance_pair_block8(vectors_ptr, block_off_i16, &q_pairs)
+        } else {
+            distance_block8(vectors_ptr, block_off_i16, &q_broadcast)
+        };
         let lane_count = (total_len - b * LANES).min(LANES);
         for (lane, &d) in dists.iter().enumerate().take(lane_count) {
             let label = *labels_ptr.add(labels_base + lane);
@@ -665,7 +1094,12 @@ fn scan_leaf_scalar(
             let mut dist = 0i64;
             let block_off = block_idx * DIM * LANES;
             for d in 0..DIM {
-                let v = unsafe { *vectors_ptr.add(block_off + d * LANES + lane) };
+                let off = if idx.is_kd_pair() {
+                    ivf_pair_offset(d, lane)
+                } else {
+                    d * LANES + lane
+                };
+                let v = unsafe { *vectors_ptr.add(block_off + off) };
                 let diff = v as i64 - query[d] as i64;
                 dist += diff * diff;
             }
@@ -686,6 +1120,8 @@ pub mod build {
     use super::*;
     use crate::consts::{DEFAULT_MCC_RISK, MCC_RISK};
     use crate::quantize;
+    use std::cmp::Ordering;
+    use std::collections::BinaryHeap;
     use std::io::Write;
     use std::path::Path;
 
@@ -710,6 +1146,31 @@ pub mod build {
         root: i32,
     }
 
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    struct SplitRange {
+        start: usize,
+        end: usize,
+    }
+
+    impl SplitRange {
+        #[inline]
+        fn len(self) -> usize {
+            self.end - self.start
+        }
+    }
+
+    impl Ord for SplitRange {
+        fn cmp(&self, other: &Self) -> Ordering {
+            self.len().cmp(&other.len())
+        }
+    }
+
+    impl PartialOrd for SplitRange {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
     impl Builder {
         pub fn new() -> Self {
             Builder {
@@ -726,118 +1187,10 @@ pub mod build {
         pub fn write_to(&self, path: &Path) -> std::io::Result<()> {
             assert!(!self.vectors.is_empty());
             assert_eq!(self.vectors.len(), self.labels.len());
-
-            let mut buckets: Vec<Vec<usize>> = vec![Vec::new(); 256];
-            for (i, v) in self.vectors.iter().enumerate() {
-                buckets[partition_key(v) as usize].push(i);
+            if std::env::var_os("RINHA_BUILD_IVF").is_some() {
+                return write_ivf_to(&self.vectors, &self.labels, path);
             }
-
-            let mut nodes: Vec<BuildNode> = Vec::new();
-            let mut blocks: Vec<([i16; STORE_DIM], u8)> =
-                Vec::with_capacity(self.vectors.len() + LANES);
-            let mut roots: Vec<PartitionRoot> = Vec::new();
-
-            for (key, indices) in buckets.iter().enumerate() {
-                if indices.is_empty() {
-                    continue;
-                }
-                let root = build_tree(
-                    &self.vectors,
-                    &self.labels,
-                    indices,
-                    DEFAULT_LEAF_SIZE,
-                    &mut blocks,
-                    &mut nodes,
-                );
-                roots.push(PartitionRoot {
-                    key: key as u32,
-                    root: root as i32,
-                });
-            }
-
-            assert_eq!(blocks.len() % LANES, 0);
-            let block_count = blocks.len() / LANES;
-            let partitions_off = HEADER_SIZE;
-            let nodes_off = partitions_off + roots.len() * PART_SIZE;
-            let vectors_off = nodes_off + nodes.len() * NODE_SIZE;
-            let labels_off = vectors_off + block_count * BLOCK_BYTES;
-            let mcc_table_off = labels_off + block_count * LANES;
-            let total = mcc_table_off + MCC_TABLE_SIZE * 2;
-            let mut out = vec![0u8; total];
-
-            let header = Header {
-                magic: MAGIC,
-                version: VERSION,
-                scale: SCALE as u32,
-                dim: DIM as u32,
-                store_dim: STORE_DIM as u32,
-                n_points: self.vectors.len() as u32,
-                part_count: roots.len() as u32,
-                node_count: nodes.len() as u32,
-                block_count: block_count as u32,
-                mcc_table_offset: mcc_table_off as u32,
-                _pad: [0; 20],
-            };
-            let header_bytes = unsafe {
-                std::slice::from_raw_parts(&header as *const Header as *const u8, HEADER_SIZE)
-            };
-            out[..HEADER_SIZE].copy_from_slice(header_bytes);
-
-            for (i, r) in roots.iter().enumerate() {
-                let off = partitions_off + i * PART_SIZE;
-                let n = &nodes[r.root as usize];
-                out[off..off + 4].copy_from_slice(&r.key.to_le_bytes());
-                out[off + 4..off + 8].copy_from_slice(&r.root.to_le_bytes());
-                out[off + 8..off + 12].copy_from_slice(&n.len.to_le_bytes());
-                write_qv(&mut out[off + 12..off + 44], &n.min);
-                write_qv(&mut out[off + 44..off + 76], &n.max);
-            }
-
-            for (i, n) in nodes.iter().enumerate() {
-                let off = nodes_off + i * NODE_SIZE;
-                out[off..off + 4].copy_from_slice(&n.left.to_le_bytes());
-                out[off + 4..off + 8].copy_from_slice(&n.right.to_le_bytes());
-                let start_block = if n.left < 0 {
-                    n.start / LANES as i32
-                } else {
-                    n.start
-                };
-                out[off + 8..off + 12].copy_from_slice(&start_block.to_le_bytes());
-                out[off + 12..off + 16].copy_from_slice(&n.len.to_le_bytes());
-                write_qv(&mut out[off + 16..off + 48], &n.min);
-                write_qv(&mut out[off + 48..off + 80], &n.max);
-            }
-
-            for b in 0..block_count {
-                let block_off = vectors_off + b * BLOCK_BYTES;
-                for d in 0..DIM {
-                    let dim_off = block_off + d * LANES * 2;
-                    for lane in 0..LANES {
-                        let slot = b * LANES + lane;
-                        let val = blocks[slot].0[d];
-                        out[dim_off + lane * 2..dim_off + lane * 2 + 2]
-                            .copy_from_slice(&val.to_le_bytes());
-                    }
-                }
-            }
-
-            for b in 0..block_count {
-                let base = labels_off + b * LANES;
-                for lane in 0..LANES {
-                    out[base + lane] = blocks[b * LANES + lane].1;
-                }
-            }
-
-            let mcc_table = build_mcc_table();
-            for (i, &v) in mcc_table.iter().enumerate() {
-                let off = mcc_table_off + i * 2;
-                out[off..off + 2].copy_from_slice(&v.to_le_bytes());
-            }
-
-            let mut f = std::io::BufWriter::with_capacity(8 << 20, std::fs::File::create(path)?);
-            f.write_all(&out)?;
-            f.flush()?;
-            Ok(())
+            write_kd_pair_to(&self.vectors, &self.labels, path)
         }
     }
 
@@ -851,6 +1204,274 @@ pub mod build {
             table[(code as usize) % MCC_TABLE_SIZE] = quantize(*risk);
         }
         table
+    }
+
+    fn write_kd_pair_to(
+        vectors: &[[i16; STORE_DIM]],
+        labels: &[u8],
+        path: &Path,
+    ) -> std::io::Result<()> {
+        let mut buckets: Vec<Vec<usize>> = vec![Vec::new(); 256];
+        for (i, v) in vectors.iter().enumerate() {
+            buckets[partition_key(v) as usize].push(i);
+        }
+
+        let mut nodes: Vec<BuildNode> = Vec::new();
+        let mut blocks: Vec<([i16; STORE_DIM], u8)> = Vec::with_capacity(vectors.len() + LANES);
+        let mut roots: Vec<PartitionRoot> = Vec::new();
+
+        for (key, indices) in buckets.iter().enumerate() {
+            if indices.is_empty() {
+                continue;
+            }
+            let root = build_tree(
+                vectors,
+                labels,
+                indices,
+                DEFAULT_LEAF_SIZE,
+                &mut blocks,
+                &mut nodes,
+            );
+            roots.push(PartitionRoot {
+                key: key as u32,
+                root: root as i32,
+            });
+        }
+
+        assert_eq!(blocks.len() % LANES, 0);
+        let block_count = blocks.len() / LANES;
+        let partitions_off = HEADER_SIZE;
+        let nodes_off = partitions_off + roots.len() * PART_SIZE;
+        let vectors_off = nodes_off + nodes.len() * NODE_SIZE;
+        let labels_off = vectors_off + block_count * BLOCK_BYTES;
+        let mcc_table_off = labels_off + block_count * LANES;
+        let total = mcc_table_off + MCC_TABLE_SIZE * 2;
+        let mut out = vec![0u8; total];
+
+        let header = Header {
+            magic: MAGIC,
+            version: KD_PAIR_VERSION,
+            scale: SCALE as u32,
+            dim: DIM as u32,
+            store_dim: STORE_DIM as u32,
+            n_points: vectors.len() as u32,
+            part_count: roots.len() as u32,
+            node_count: nodes.len() as u32,
+            block_count: block_count as u32,
+            mcc_table_offset: mcc_table_off as u32,
+            _pad: [0; 20],
+        };
+        let header_bytes = unsafe {
+            std::slice::from_raw_parts(&header as *const Header as *const u8, HEADER_SIZE)
+        };
+        out[..HEADER_SIZE].copy_from_slice(header_bytes);
+
+        for (i, r) in roots.iter().enumerate() {
+            let off = partitions_off + i * PART_SIZE;
+            let n = &nodes[r.root as usize];
+            out[off..off + 4].copy_from_slice(&r.key.to_le_bytes());
+            out[off + 4..off + 8].copy_from_slice(&r.root.to_le_bytes());
+            out[off + 8..off + 12].copy_from_slice(&n.len.to_le_bytes());
+            write_qv(&mut out[off + 12..off + 44], &n.min);
+            write_qv(&mut out[off + 44..off + 76], &n.max);
+        }
+
+        for (i, n) in nodes.iter().enumerate() {
+            let off = nodes_off + i * NODE_SIZE;
+            out[off..off + 4].copy_from_slice(&n.left.to_le_bytes());
+            out[off + 4..off + 8].copy_from_slice(&n.right.to_le_bytes());
+            let start_block = if n.left < 0 {
+                n.start / LANES as i32
+            } else {
+                n.start
+            };
+            out[off + 8..off + 12].copy_from_slice(&start_block.to_le_bytes());
+            out[off + 12..off + 16].copy_from_slice(&n.len.to_le_bytes());
+            write_qv(&mut out[off + 16..off + 48], &n.min);
+            write_qv(&mut out[off + 48..off + 80], &n.max);
+        }
+
+        for b in 0..block_count {
+            let block_off = vectors_off + b * BLOCK_BYTES;
+            for d in 0..DIM {
+                for lane in 0..LANES {
+                    let slot = b * LANES + lane;
+                    let dst = block_off + ivf_pair_offset(d, lane) * 2;
+                    out[dst..dst + 2].copy_from_slice(&blocks[slot].0[d].to_le_bytes());
+                }
+            }
+        }
+
+        for b in 0..block_count {
+            let base = labels_off + b * LANES;
+            for lane in 0..LANES {
+                out[base + lane] = blocks[b * LANES + lane].1;
+            }
+        }
+
+        let mcc_table = build_mcc_table();
+        for (i, &v) in mcc_table.iter().enumerate() {
+            let off = mcc_table_off + i * 2;
+            out[off..off + 2].copy_from_slice(&v.to_le_bytes());
+        }
+
+        let mut f = std::io::BufWriter::with_capacity(8 << 20, std::fs::File::create(path)?);
+        f.write_all(&out)?;
+        f.flush()?;
+        Ok(())
+    }
+
+    fn write_ivf_to(
+        vectors: &[[i16; STORE_DIM]],
+        labels: &[u8],
+        path: &Path,
+    ) -> std::io::Result<()> {
+        let mut indices: Vec<usize> = (0..vectors.len()).collect();
+        let ranges = split_ivf_ranges(vectors, &mut indices, IVF_CLUSTER_COUNT);
+        let cluster_count = ranges.len();
+
+        let mut centroids = vec![[0i16; STORE_DIM]; cluster_count];
+        let mut mins = vec![[0i16; STORE_DIM]; cluster_count];
+        let mut maxs = vec![[0i16; STORE_DIM]; cluster_count];
+        let mut counts = vec![0u32; cluster_count];
+        let mut block_offsets = vec![0u32; cluster_count + 1];
+
+        for (c, range) in ranges.iter().enumerate() {
+            let slice = &indices[range.start..range.end];
+            counts[c] = slice.len() as u32;
+            block_offsets[c + 1] = block_offsets[c] + slice.len().div_ceil(LANES) as u32;
+            let (lo, hi) = bounds(vectors, slice);
+            mins[c] = lo;
+            maxs[c] = hi;
+
+            let mut sums = [0i64; STORE_DIM];
+            for &idx in slice {
+                for d in 0..DIM {
+                    sums[d] += vectors[idx][d] as i64;
+                }
+            }
+            for d in 0..DIM {
+                centroids[c][d] = (sums[d] / slice.len() as i64) as i16;
+            }
+        }
+
+        for (c, range) in ranges.iter().enumerate() {
+            let centroid = centroids[c];
+            indices[range.start..range.end]
+                .sort_unstable_by_key(|&i| distance_qv_scalar(&vectors[i], &centroid));
+        }
+
+        let block_count = block_offsets[cluster_count] as usize;
+        let layout = ivf_offsets(cluster_count, block_count);
+        let mut out = vec![0u8; layout.end];
+
+        let header = Header {
+            magic: MAGIC,
+            version: IVF_VERSION,
+            scale: SCALE as u32,
+            dim: DIM as u32,
+            store_dim: STORE_DIM as u32,
+            n_points: vectors.len() as u32,
+            part_count: cluster_count as u32,
+            node_count: 0,
+            block_count: block_count as u32,
+            mcc_table_offset: layout.mcc_table as u32,
+            _pad: [0; 20],
+        };
+        let header_bytes = unsafe {
+            std::slice::from_raw_parts(&header as *const Header as *const u8, HEADER_SIZE)
+        };
+        out[..HEADER_SIZE].copy_from_slice(header_bytes);
+
+        for c in 0..cluster_count {
+            write_qv(
+                &mut out[layout.centroids + c * STORE_DIM * 2
+                    ..layout.centroids + (c + 1) * STORE_DIM * 2],
+                &centroids[c],
+            );
+            write_qv(
+                &mut out[layout.bbox_min + c * STORE_DIM * 2
+                    ..layout.bbox_min + (c + 1) * STORE_DIM * 2],
+                &mins[c],
+            );
+            write_qv(
+                &mut out[layout.bbox_max + c * STORE_DIM * 2
+                    ..layout.bbox_max + (c + 1) * STORE_DIM * 2],
+                &maxs[c],
+            );
+            out[layout.counts + c * 4..layout.counts + c * 4 + 4]
+                .copy_from_slice(&counts[c].to_le_bytes());
+            out[layout.offsets + c * 4..layout.offsets + c * 4 + 4]
+                .copy_from_slice(&block_offsets[c].to_le_bytes());
+        }
+        out[layout.offsets + cluster_count * 4..layout.offsets + cluster_count * 4 + 4]
+            .copy_from_slice(&block_offsets[cluster_count].to_le_bytes());
+
+        for (c, range) in ranges.iter().enumerate() {
+            let start_block = block_offsets[c] as usize;
+            for (pos, &orig_idx) in indices[range.start..range.end].iter().enumerate() {
+                let block = start_block + pos / LANES;
+                let lane = pos % LANES;
+                out[layout.labels + block * LANES + lane] = labels[orig_idx];
+                let block_off = layout.vectors + block * BLOCK_BYTES;
+                for d in 0..DIM {
+                    let dst = block_off + ivf_pair_offset(d, lane) * 2;
+                    out[dst..dst + 2].copy_from_slice(&vectors[orig_idx][d].to_le_bytes());
+                }
+            }
+        }
+
+        let mcc_table = build_mcc_table();
+        for (i, &v) in mcc_table.iter().enumerate() {
+            let off = layout.mcc_table + i * 2;
+            out[off..off + 2].copy_from_slice(&v.to_le_bytes());
+        }
+
+        let mut f = std::io::BufWriter::with_capacity(8 << 20, std::fs::File::create(path)?);
+        f.write_all(&out)?;
+        f.flush()?;
+        Ok(())
+    }
+
+    fn split_ivf_ranges(
+        vectors: &[[i16; STORE_DIM]],
+        indices: &mut [usize],
+        target_clusters: usize,
+    ) -> Vec<SplitRange> {
+        let mut heap = BinaryHeap::new();
+        heap.push(SplitRange {
+            start: 0,
+            end: indices.len(),
+        });
+
+        while heap.len() < target_clusters {
+            let range = match heap.pop() {
+                Some(r) if r.len() > LANES => r,
+                Some(r) => {
+                    heap.push(r);
+                    break;
+                }
+                None => break,
+            };
+            let slice = &indices[range.start..range.end];
+            let (lo, hi) = bounds(vectors, slice);
+            let split_dim = widest_dim(&lo, &hi);
+            let mid = range.start + range.len() / 2;
+            indices[range.start..range.end]
+                .select_nth_unstable_by_key(mid - range.start, |&i| vectors[i][split_dim]);
+            heap.push(SplitRange {
+                start: range.start,
+                end: mid,
+            });
+            heap.push(SplitRange {
+                start: mid,
+                end: range.end,
+            });
+        }
+
+        let mut ranges = heap.into_vec();
+        ranges.sort_unstable_by_key(|r| r.start);
+        ranges
     }
 
     fn write_qv(dst: &mut [u8], v: &[i16; STORE_DIM]) {
@@ -971,26 +1592,5 @@ mod tests {
         let lo = [50i16; STORE_DIM];
         let hi = [200i16; STORE_DIM];
         assert_eq!(lower_bound_vec(&q, &lo, &hi), 0);
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    #[test]
-    fn lower_bound_avx2_matches_scalar() {
-        if !std::is_x86_feature_detected!("avx2") {
-            return;
-        }
-        let q = [
-            -10000, -5000, -1, 0, 1, 450, 900, 1200, 2049, 4096, 7000, 10000, 1234, -4321, 7777,
-            -8888,
-        ];
-        let lo = [
-            -9000, -6000, -10, 0, 3, 0, 1000, 1100, 1000, 4097, 6000, 8000, 1234, -5000, -1, -1,
-        ];
-        let hi = [
-            -8000, -4000, 10, 100, 4, 100, 1100, 1150, 2000, 5000, 6500, 9000, 2000, -4000, 1, 1,
-        ];
-        let scalar = lower_bound_vec(&q, &lo, &hi);
-        let avx2 = unsafe { lower_bound_vec_avx2(&q, &lo, &hi) };
-        assert_eq!(avx2, scalar);
     }
 }
