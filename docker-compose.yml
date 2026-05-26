@@ -3,8 +3,6 @@ services:
     image: ghcr.io/rafaelcoelhox/detecta-fraude-lb:latest
     container_name: detecta-lb
     platform: linux/amd64
-    security_opt:
-      - seccomp=unconfined
     ports:
       - "9999:9999"
     networks:
@@ -27,15 +25,13 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.16"
-          memory: "25MB"
+          cpus: "0.10"
+          memory: "28MB"
 
   api1:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:latest
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:pgo-avx2-3157923
     container_name: detecta-api1
     platform: linux/amd64
-    security_opt:
-      - seccomp=unconfined
     networks:
       - rinha
     volumes:
@@ -51,16 +47,15 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.42"
+          cpus: "0.45"
           memory: "160MB"
 
   api2:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:latest
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:pgo-avx2-3157923
     container_name: detecta-api2
     platform: linux/amd64
-    network_mode: "none"
-    security_opt:
-      - seccomp=unconfined
+    networks:
+      - rinha
     volumes:
       - sockets:/sockets
     environment:
@@ -74,7 +69,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.42"
+          cpus: "0.45"
           memory: "160MB"
 
 networks:
@@ -87,4 +82,4 @@ volumes:
     driver_opts:
       type: tmpfs
       device: tmpfs
-      o: "size=4m,uid=0,gid=0,mode=0777"
+      o: "size=1m,uid=0,gid=0,mode=0777"
