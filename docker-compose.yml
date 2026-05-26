@@ -14,7 +14,7 @@ services:
     environment:
       LB_PORT: "9999"
       LB_BACKLOG: "8192"
-      API_SOCKETS: "/sockets/api1-w0.sock,/sockets/api2-w0.sock"
+      API_SOCKETS: "/sockets/api1-w0.sock,/sockets/api2-w0.sock,/sockets/api1-w1.sock,/sockets/api2-w1.sock"
     depends_on:
       api1:
         condition: service_started
@@ -42,7 +42,7 @@ services:
       - sockets:/sockets
     environment:
       API_SOCKET_PREFIX: "/sockets/api1"
-      API_WORKERS: "1"
+      API_WORKERS: "2"
       INDEX_PATH: "/index/index.bin"
     logging:
       driver: none
@@ -65,7 +65,7 @@ services:
       - sockets:/sockets
     environment:
       API_SOCKET_PREFIX: "/sockets/api2"
-      API_WORKERS: "1"
+      API_WORKERS: "2"
       INDEX_PATH: "/index/index.bin"
     logging:
       driver: none
