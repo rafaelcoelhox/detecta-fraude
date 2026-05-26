@@ -31,7 +31,7 @@ services:
           memory: "25MB"
 
   api1:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:kd-pair-hot-202605260841
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:kd-pair-fd-202605260906
     container_name: detecta-api1
     platform: linux/amd64
     security_opt:
@@ -55,7 +55,7 @@ services:
           memory: "160MB"
 
   api2:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:kd-pair-hot-202605260841
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:kd-pair-fd-202605260906
     container_name: detecta-api2
     platform: linux/amd64
     network_mode: "none"

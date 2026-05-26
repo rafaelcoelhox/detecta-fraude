@@ -161,6 +161,7 @@ impl Server {
                         continue;
                     }
                     self.put_conn(fd, Conn::new());
+                    self.handle_conn(fd, EPOLLIN as u32);
                 }
                 Ok(None) => return Ok(()),
                 Err(e) => {
