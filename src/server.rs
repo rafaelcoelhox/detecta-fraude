@@ -87,6 +87,7 @@ impl Server {
         if epfd < 0 {
             return Err(io::Error::last_os_error());
         }
+        configure_busy_poll(epfd);
         let mut s = Server {
             epfd,
             uds_fd,
@@ -158,8 +159,27 @@ impl Server {
     pub fn run(&mut self) -> io::Result<()> {
         const MAX_EVENTS: usize = 128;
         let mut events: [epoll_event; MAX_EVENTS] = unsafe { MaybeUninit::zeroed().assume_init() };
+        let spin = std::time::Duration::from_micros(epoll_spin_us());
+        let idle_timeout = epoll_timeout_ms();
         loop {
-            let n = unsafe { epoll_wait(self.epfd, events.as_mut_ptr(), MAX_EVENTS as i32, -1) };
+            // Hot path: tenta sem bloquear. Se nada chegou, faz busy-poll por um
+            // orçamento curto antes de dormir. Mantém o worker "quente" e evita o
+            // round-trip de wakeup do scheduler, que domina o p99 quando os núcleos
+            // são poucos e lentos (caso da máquina oficial).
+            let mut n = unsafe { epoll_wait(self.epfd, events.as_mut_ptr(), MAX_EVENTS as i32, 0) };
+            if n == 0 && !spin.is_zero() {
+                let start = std::time::Instant::now();
+                while start.elapsed() < spin {
+                    n = unsafe { epoll_wait(self.epfd, events.as_mut_ptr(), MAX_EVENTS as i32, 0) };
+                    if n != 0 {
+                        break;
+                    }
+                    std::hint::spin_loop();
+                }
+            }
+            if n == 0 {
+                n = unsafe { epoll_wait(self.epfd, events.as_mut_ptr(), MAX_EVENTS as i32, idle_timeout) };
+            }
             if n < 0 {
                 let err = io::Error::last_os_error();
                 if err.raw_os_error() == Some(EINTR) {
@@ -566,6 +586,67 @@ fn conn_pool_cap() -> usize {
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(DEFAULT_CONN_POOL_INIT)
+}
+
+// --- busy-poll do epoll: corta a latência de wakeup do scheduler no tail ---
+
+// Layout da UAPI do kernel (include/uapi/linux/eventpoll.h, kernel >= 6.9).
+#[repr(C)]
+struct EpollParams {
+    busy_poll_usecs: u32,
+    busy_poll_budget: u16,
+    prefer_busy_poll: u8,
+    _pad: u8,
+}
+
+// EPIOCSPARAMS = _IOW(0x8A, 0x01, struct epoll_params), montado a partir da
+// fórmula _IOC padrão do asm-generic (x86_64): dir=WRITE(1), type=0x8A, nr=1.
+const fn iow(ty: u32, nr: u32, size: u32) -> libc::c_ulong {
+    ((1u32 << 30) | (size << 16) | (ty << 8) | nr) as libc::c_ulong
+}
+const EPIOCSPARAMS: libc::c_ulong = iow(0x8A, 0x01, std::mem::size_of::<EpollParams>() as u32);
+
+// Pede ao kernel para busy-poll do epoll antes de dormir. Best-effort: em kernel
+// sem o ioctl, apenas segue sem busy-poll de kernel — o spin de userspace no
+// run() continua valendo de qualquer forma.
+fn configure_busy_poll(epfd: c_int) {
+    let usecs = env_u32("EPOLL_BUSY_POLL_US", 50);
+    let prefer = env_u32("EPOLL_PREFER_BUSY_POLL", 1) as u8;
+    if usecs == 0 && prefer == 0 {
+        return;
+    }
+    let params = EpollParams {
+        busy_poll_usecs: usecs,
+        busy_poll_budget: env_u32("EPOLL_BUSY_POLL_BUDGET", 8) as u16,
+        prefer_busy_poll: prefer,
+        _pad: 0,
+    };
+    unsafe {
+        libc::ioctl(epfd, EPIOCSPARAMS as _, &params as *const EpollParams);
+    }
+}
+
+fn env_u32(name: &str, default: u32) -> u32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+// Orçamento de busy-poll em userspace (epoll_wait com timeout 0 em loop), em µs.
+fn epoll_spin_us() -> u64 {
+    std::env::var("EPOLL_SPIN_US")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50)
+}
+
+// Timeout do epoll_wait quando o worker finalmente dorme (ms). -1 = bloqueio.
+fn epoll_timeout_ms() -> c_int {
+    std::env::var("EPOLL_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1)
 }
 
 fn set_nonblocking(fd: c_int) -> io::Result<()> {
