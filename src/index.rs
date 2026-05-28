@@ -1,6 +1,88 @@
 use crate::{DIM, K, SCALE, STORE_DIM};
 use std::path::Path;
 
+/// Contadores de trabalho por query, ativados pela feature `knn_stats`.
+/// Sem a feature, as funções `inc_*`/`set_*` compilam para no-op (inline
+/// vazio), então o caminho de produção (fraud-api) fica intacto e sem custo.
+pub mod stats {
+    #[cfg(feature = "knn_stats")]
+    use std::cell::Cell;
+
+    #[cfg(feature = "knn_stats")]
+    thread_local! {
+        static NODES: Cell<u32> = Cell::new(0);
+        static LEAVES: Cell<u32> = Cell::new(0);
+        static BLOCKS: Cell<u32> = Cell::new(0);
+        static PARTS: Cell<u32> = Cell::new(0);
+        static PRIMARY_HIT: Cell<bool> = Cell::new(false);
+        static EARLY_HIT: Cell<bool> = Cell::new(false);
+    }
+
+    #[inline(always)]
+    pub fn inc_nodes() {
+        #[cfg(feature = "knn_stats")]
+        NODES.with(|c| c.set(c.get() + 1));
+    }
+    #[inline(always)]
+    pub fn inc_leaves() {
+        #[cfg(feature = "knn_stats")]
+        LEAVES.with(|c| c.set(c.get() + 1));
+    }
+    #[inline(always)]
+    pub fn inc_blocks() {
+        #[cfg(feature = "knn_stats")]
+        BLOCKS.with(|c| c.set(c.get() + 1));
+    }
+    #[inline(always)]
+    pub fn inc_parts() {
+        #[cfg(feature = "knn_stats")]
+        PARTS.with(|c| c.set(c.get() + 1));
+    }
+    #[inline(always)]
+    pub fn set_primary_hit() {
+        #[cfg(feature = "knn_stats")]
+        PRIMARY_HIT.with(|c| c.set(true));
+    }
+    #[inline(always)]
+    pub fn set_early_hit() {
+        #[cfg(feature = "knn_stats")]
+        EARLY_HIT.with(|c| c.set(true));
+    }
+
+    #[cfg(feature = "knn_stats")]
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct QueryStats {
+        pub nodes: u32,
+        pub leaves: u32,
+        pub blocks: u32,
+        pub partitions: u32,
+        pub primary_hit: bool,
+        pub early_hit: bool,
+    }
+
+    #[cfg(feature = "knn_stats")]
+    pub fn reset() {
+        NODES.with(|c| c.set(0));
+        LEAVES.with(|c| c.set(0));
+        BLOCKS.with(|c| c.set(0));
+        PARTS.with(|c| c.set(0));
+        PRIMARY_HIT.with(|c| c.set(false));
+        EARLY_HIT.with(|c| c.set(false));
+    }
+
+    #[cfg(feature = "knn_stats")]
+    pub fn snapshot() -> QueryStats {
+        QueryStats {
+            nodes: NODES.with(|c| c.get()),
+            leaves: LEAVES.with(|c| c.get()),
+            blocks: BLOCKS.with(|c| c.get()),
+            partitions: PARTS.with(|c| c.get()),
+            primary_hit: PRIMARY_HIT.with(|c| c.get()),
+            early_hit: EARLY_HIT.with(|c| c.get()),
+        }
+    }
+}
+
 pub const LABEL_LEGIT: u8 = 0;
 pub const LABEL_FRAUD: u8 = 1;
 
@@ -920,6 +1002,7 @@ unsafe fn fraud_count_pair_avx2(idx: &IndexReader, query: &[i16; STORE_DIM]) -> 
     let primary = idx.part_by_key(key);
     if primary >= 0 {
         let (root, _len) = read_partition_meta(idx, primary as usize);
+        stats::inc_parts();
         if search_node_pair_avx2(
             idx,
             root,
@@ -929,6 +1012,8 @@ unsafe fn fraud_count_pair_avx2(idx: &IndexReader, query: &[i16; STORE_DIM]) -> 
             &mut best_dists,
             &mut best_labels,
         ) {
+            stats::set_primary_hit();
+            stats::set_early_hit();
             return sum_labels(&best_labels);
         }
     }
@@ -953,6 +1038,7 @@ unsafe fn fraud_count_pair_avx2(idx: &IndexReader, query: &[i16; STORE_DIM]) -> 
             break;
         }
         let (root, _len) = read_partition_meta(idx, part_idx as usize);
+        stats::inc_parts();
         if search_node_pair_avx2(
             idx,
             root,
@@ -962,6 +1048,7 @@ unsafe fn fraud_count_pair_avx2(idx: &IndexReader, query: &[i16; STORE_DIM]) -> 
             &mut best_dists,
             &mut best_labels,
         ) {
+            stats::set_early_hit();
             break;
         }
     }
@@ -993,6 +1080,7 @@ unsafe fn search_node_pair_avx2(
     loop {
         if current_bound < best_dists[K - 1] {
             let (left, right, start, len) = read_node_meta(idx, current as usize);
+            stats::inc_nodes();
             if left < 0 {
                 if scan_leaf_pair_avx2(idx, start, len, q_pairs, best_dists, best_labels) {
                     return true;
@@ -1040,8 +1128,10 @@ unsafe fn scan_leaf_pair_avx2(
     let labels_ptr = idx.labels_ptr();
     let vectors_ptr = idx.vectors_ptr();
     let total_len = len as usize;
+    stats::inc_leaves();
 
     for b in 0..blocks {
+        stats::inc_blocks();
         let block_idx = start_block as usize + b;
         let labels_base = block_idx * LANES;
         let block_off_i16 = block_idx * DIM * LANES;
@@ -1475,6 +1565,7 @@ pub mod build {
         labels: &[u8],
         path: &Path,
     ) -> std::io::Result<()> {
+        let leaf_size = kd_leaf_size();
         let mut buckets: Vec<Vec<usize>> = vec![Vec::new(); 256];
         for (i, v) in vectors.iter().enumerate() {
             buckets[partition_key(v) as usize].push(i);
@@ -1488,14 +1579,7 @@ pub mod build {
             if indices.is_empty() {
                 continue;
             }
-            let root = build_tree(
-                vectors,
-                labels,
-                indices,
-                DEFAULT_LEAF_SIZE,
-                &mut blocks,
-                &mut nodes,
-            );
+            let root = build_tree(vectors, labels, indices, leaf_size, &mut blocks, &mut nodes);
             roots.push(PartitionRoot {
                 key: key as u32,
                 root: root as i32,
@@ -1583,6 +1667,14 @@ pub mod build {
         f.write_all(&out)?;
         f.flush()?;
         Ok(())
+    }
+
+    fn kd_leaf_size() -> usize {
+        std::env::var("KD_LEAF_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&v| (LANES..=1024).contains(&v))
+            .unwrap_or(DEFAULT_LEAF_SIZE)
     }
 
     fn write_ivf_to(

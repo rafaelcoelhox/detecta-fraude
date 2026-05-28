@@ -25,6 +25,11 @@ name = "bench"
 path = "src/bin/bench.rs"
 required-features = []
 
+[[bin]]
+name = "knn-tail"
+path = "src/bin/knn-tail.rs"
+required-features = ["builder", "knn_stats"]
+
 [dependencies]
 libc = "0.2"
 memmap2 = "0.9"
@@ -40,6 +45,7 @@ flate2 = "1"
 [features]
 default = []
 builder = ["dep:flate2", "dep:serde_json"]
+knn_stats = []
 
 [dependencies.flate2]
 version = "1"
