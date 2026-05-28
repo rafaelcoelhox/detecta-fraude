@@ -7,10 +7,10 @@ use crate::parse::parse_payload;
 use crate::response::Responses;
 use crate::vectorize::vectorize_q;
 use libc::{
-    c_int, c_void, cmsghdr, epoll_create1, epoll_ctl, epoll_event, epoll_wait, iovec, msghdr,
-    recvmsg, EAGAIN, EINTR, EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, EPOLLRDHUP, EPOLL_CTL_ADD,
-    EPOLL_CTL_DEL, EPOLL_CTL_MOD, F_GETFL, F_SETFL, MSG_CMSG_CLOEXEC, MSG_DONTWAIT, O_NONBLOCK,
-    SCM_RIGHTS, SOL_SOCKET,
+    c_int, c_void, cmsghdr, epoll_create1, epoll_ctl, epoll_event, epoll_pwait2, epoll_wait, iovec,
+    msghdr, recvmsg, timespec, EAGAIN, EINTR, ENOSYS, EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT,
+    EPOLLRDHUP, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD, F_GETFL, F_SETFL, MSG_CMSG_CLOEXEC,
+    MSG_DONTWAIT, O_NONBLOCK, SCM_RIGHTS, SOL_SOCKET,
 };
 use std::io;
 use std::mem::MaybeUninit;
@@ -160,6 +160,7 @@ impl Server {
         const MAX_EVENTS: usize = 128;
         let mut events: [epoll_event; MAX_EVENTS] = unsafe { MaybeUninit::zeroed().assume_init() };
         let spin = std::time::Duration::from_micros(epoll_spin_us());
+        let idle_us = epoll_idle_us();
         let idle_timeout = epoll_timeout_ms();
         loop {
             let mut n = unsafe { epoll_wait(self.epfd, events.as_mut_ptr(), MAX_EVENTS as i32, 0) };
@@ -174,14 +175,13 @@ impl Server {
                 }
             }
             if n == 0 {
-                n = unsafe {
-                    epoll_wait(
-                        self.epfd,
-                        events.as_mut_ptr(),
-                        MAX_EVENTS as i32,
-                        idle_timeout,
-                    )
-                };
+                n = wait_idle(
+                    self.epfd,
+                    events.as_mut_ptr(),
+                    MAX_EVENTS as i32,
+                    idle_us,
+                    idle_timeout,
+                );
             }
             if n < 0 {
                 let err = io::Error::last_os_error();
@@ -643,12 +643,41 @@ fn epoll_spin_us() -> u64 {
         .unwrap_or(50)
 }
 
+fn epoll_idle_us() -> u64 {
+    std::env::var("EPOLL_IDLE_US")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+}
+
 // Timeout do epoll_wait quando o worker dorme entre rajadas (ms). -1 = bloqueio.
 fn epoll_timeout_ms() -> c_int {
     std::env::var("EPOLL_TIMEOUT_MS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1)
+}
+
+fn wait_idle(
+    epfd: c_int,
+    events: *mut epoll_event,
+    max_events: c_int,
+    idle_us: u64,
+    fallback_timeout_ms: c_int,
+) -> c_int {
+    if idle_us == 0 {
+        return unsafe { epoll_wait(epfd, events, max_events, fallback_timeout_ms) };
+    }
+
+    let timeout = timespec {
+        tv_sec: (idle_us / 1_000_000) as _,
+        tv_nsec: ((idle_us % 1_000_000) * 1000) as _,
+    };
+    let n = unsafe { epoll_pwait2(epfd, events, max_events, &timeout, std::ptr::null()) };
+    if n < 0 && std::io::Error::last_os_error().raw_os_error() == Some(ENOSYS) {
+        return unsafe { epoll_wait(epfd, events, max_events, fallback_timeout_ms) };
+    }
+    n
 }
 
 fn set_nonblocking(fd: c_int) -> io::Result<()> {
