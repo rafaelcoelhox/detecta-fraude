@@ -30,7 +30,7 @@ services:
           memory: "20MB"
 
   api1:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:kbusypoll-20260528
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:busypoll-20260528
     container_name: detecta-api1
     platform: linux/amd64
     networks:
@@ -44,6 +44,7 @@ services:
       API_WARMUP_QUERIES: "4096"
       INDEX_MLOCK: "1"
       INDEX_PATH: "/index/index.bin"
+      EPOLL_SPIN_US: "150"
     logging:
       driver: none
     ulimits:
@@ -60,7 +61,7 @@ services:
           memory: "165MB"
 
   api2:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:kbusypoll-20260528
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:busypoll-20260528
     container_name: detecta-api2
     platform: linux/amd64
     network_mode: "none"
@@ -73,6 +74,7 @@ services:
       API_WARMUP_QUERIES: "4096"
       INDEX_MLOCK: "1"
       INDEX_PATH: "/index/index.bin"
+      EPOLL_SPIN_US: "150"
     logging:
       driver: none
     ulimits:
