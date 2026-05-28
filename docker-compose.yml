@@ -3,8 +3,6 @@ services:
     image: ghcr.io/rafaelcoelhox/detecta-fraude-lb:fd-p99-202605281043
     container_name: detecta-lb
     platform: linux/amd64
-    security_opt:
-      - seccomp=unconfined
     ports:
       - "9999:9999"
     networks:
@@ -35,8 +33,6 @@ services:
     image: ghcr.io/rafaelcoelhox/detecta-fraude-api:busypoll-20260528
     container_name: detecta-api1
     platform: linux/amd64
-    security_opt:
-      - seccomp=unconfined
     networks:
       - rinha
     volumes:
@@ -68,8 +64,6 @@ services:
     container_name: detecta-api2
     platform: linux/amd64
     network_mode: "none"
-    security_opt:
-      - seccomp=unconfined
     volumes:
       - sockets:/sockets
     environment:
