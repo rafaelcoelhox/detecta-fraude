@@ -99,19 +99,3 @@ volumes:
       type: tmpfs
       device: tmpfs
       o: "size=4m,uid=0,gid=0,mode=0777"
-      resources:
-        limits:
-          cpus: "0.45"
-          memory: "165MB"
-
-networks:
-  rinha:
-    driver: bridge
-
-volumes:
-  sockets:
-    driver: local
-    driver_opts:
-      type: tmpfs
-      device: tmpfs
-      o: "size=4m,uid=0,gid=0,mode=0777"
