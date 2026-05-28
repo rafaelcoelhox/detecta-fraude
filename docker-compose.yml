@@ -30,7 +30,7 @@ services:
           memory: "20MB"
 
   api1:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:epollspin-20260528-155b5f9
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:epollidle-20260528-feb805b
     container_name: detecta-api1
     platform: linux/amd64
     networks:
@@ -45,6 +45,7 @@ services:
       INDEX_MLOCK: "1"
       INDEX_PATH: "/index/index.bin"
       EPOLL_SPIN_US: "150"
+      EPOLL_IDLE_US: "250"
     logging:
       driver: none
     ulimits:
@@ -61,7 +62,7 @@ services:
           memory: "165MB"
 
   api2:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:epollspin-20260528-155b5f9
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:epollidle-20260528-feb805b
     container_name: detecta-api2
     platform: linux/amd64
     network_mode: "none"
@@ -75,6 +76,7 @@ services:
       INDEX_MLOCK: "1"
       INDEX_PATH: "/index/index.bin"
       EPOLL_SPIN_US: "150"
+      EPOLL_IDLE_US: "250"
     logging:
       driver: none
     ulimits:
