@@ -217,6 +217,7 @@ impl IndexReader {
         };
         idx.advise();
         idx.prefetch();
+        idx.lock_if_requested();
         Ok(idx)
     }
 
@@ -374,6 +375,20 @@ impl IndexReader {
             eprintln!("[index] prefetch sentinel hit");
         }
     }
+
+    #[cfg(target_os = "linux")]
+    fn lock_if_requested(&self) {
+        if std::env::var("INDEX_MLOCK").ok().as_deref() != Some("1") {
+            return;
+        }
+        let rc = unsafe { libc::mlock(self.base as *const _, self.len) };
+        if rc != 0 {
+            eprintln!("[index] mlock failed: {}", std::io::Error::last_os_error());
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn lock_if_requested(&self) {}
 }
 
 fn invalid(msg: &'static str) -> std::io::Error {
@@ -456,34 +471,114 @@ pub fn lower_bound_vec(
     acc
 }
 
+#[inline(always)]
+fn lower_bound_ptr_scalar(q: &[i16; STORE_DIM], min: *const i16, max: *const i16) -> i64 {
+    let mut acc = 0i64;
+    let mut d = 0usize;
+    while d < DIM {
+        let lo = unsafe { *min.add(d) };
+        let hi = unsafe { *max.add(d) };
+        acc += lower_bound_dim(q[d], lo, hi);
+        d += 1;
+    }
+    acc
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn lower_bound_ptr_avx2(q: &[i16; STORE_DIM], min: *const i16, max: *const i16) -> i64 {
+    use std::arch::x86_64::*;
+
+    let qv = _mm256_loadu_si256(q.as_ptr() as *const __m256i);
+    let mn = _mm256_loadu_si256(min as *const __m256i);
+    let mx = _mm256_loadu_si256(max as *const __m256i);
+    let zero = _mm256_setzero_si256();
+    let below = _mm256_max_epi16(_mm256_sub_epi16(mn, qv), zero);
+    let above = _mm256_max_epi16(_mm256_sub_epi16(qv, mx), zero);
+    let gap = _mm256_max_epi16(below, above);
+    let sq_pairs = _mm256_madd_epi16(gap, gap);
+    let lo = _mm256_cvtepi32_epi64(_mm256_castsi256_si128(sq_pairs));
+    let hi = _mm256_cvtepi32_epi64(_mm256_extracti128_si256(sq_pairs, 1));
+    let sum = _mm256_add_epi64(lo, hi);
+    let sum_hi = _mm256_extracti128_si256(sum, 1);
+    let sum_128 = _mm_add_epi64(_mm256_castsi256_si128(sum), sum_hi);
+    _mm_extract_epi64(sum_128, 0) + _mm_extract_epi64(sum_128, 1)
+}
+
 #[inline]
-fn read_partition(
-    idx: &IndexReader,
-    part_idx: usize,
-) -> (i32, i32, [i16; STORE_DIM], [i16; STORE_DIM]) {
+fn read_partition_meta(idx: &IndexReader, part_idx: usize) -> (i32, i32) {
     let p = idx.partitions_ptr();
     let off = part_idx * PART_SIZE;
     let root = read_i32_at(p, off + 4);
     let len = read_i32_at(p, off + 8);
-    let min = read_qv(p, off + 12);
-    let max = read_qv(p, off + 44);
-    (root, len, min, max)
+    (root, len)
 }
 
 #[inline]
-fn read_node(
-    idx: &IndexReader,
-    node_idx: usize,
-) -> (i32, i32, i32, i32, [i16; STORE_DIM], [i16; STORE_DIM]) {
+fn read_node_meta(idx: &IndexReader, node_idx: usize) -> (i32, i32, i32, i32) {
     let p = idx.nodes_ptr();
     let off = node_idx * NODE_SIZE;
     let left = read_i32_at(p, off);
     let right = read_i32_at(p, off + 4);
     let start = read_i32_at(p, off + 8);
     let len = read_i32_at(p, off + 12);
-    let min = read_qv(p, off + 16);
-    let max = read_qv(p, off + 48);
-    (left, right, start, len, min, max)
+    (left, right, start, len)
+}
+
+#[inline(always)]
+fn partition_bounds_ptr(idx: &IndexReader, part_idx: usize) -> (*const i16, *const i16) {
+    let p = idx.partitions_ptr();
+    let off = part_idx * PART_SIZE;
+    unsafe { (p.add(off + 12) as *const i16, p.add(off + 44) as *const i16) }
+}
+
+#[inline(always)]
+fn node_bounds_ptr(idx: &IndexReader, node_idx: usize) -> (*const i16, *const i16) {
+    let p = idx.nodes_ptr();
+    let off = node_idx * NODE_SIZE;
+    unsafe { (p.add(off + 16) as *const i16, p.add(off + 48) as *const i16) }
+}
+
+#[inline(always)]
+fn lower_bound_partition_scalar(idx: &IndexReader, part_idx: usize, q: &[i16; STORE_DIM]) -> i64 {
+    let (min, max) = partition_bounds_ptr(idx, part_idx);
+    lower_bound_ptr_scalar(q, min, max)
+}
+
+#[inline(always)]
+fn lower_bound_node_scalar(idx: &IndexReader, node_idx: usize, q: &[i16; STORE_DIM]) -> i64 {
+    let (min, max) = node_bounds_ptr(idx, node_idx);
+    lower_bound_ptr_scalar(q, min, max)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn lower_bound_partition_avx2(
+    idx: &IndexReader,
+    part_idx: usize,
+    q: &[i16; STORE_DIM],
+) -> i64 {
+    let (min, max) = partition_bounds_ptr(idx, part_idx);
+    lower_bound_ptr_avx2(q, min, max)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn lower_bound_node_avx2(idx: &IndexReader, node_idx: usize, q: &[i16; STORE_DIM]) -> i64 {
+    let (min, max) = node_bounds_ptr(idx, node_idx);
+    lower_bound_ptr_avx2(q, min, max)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn lower_bound_ivf_cluster_avx2(
+    idx: &IndexReader,
+    cluster: usize,
+    q: &[i16; STORE_DIM],
+) -> i64 {
+    let min = idx.ivf_min_ptr().add(cluster * STORE_DIM * 2) as *const i16;
+    let max = idx.ivf_max_ptr().add(cluster * STORE_DIM * 2) as *const i16;
+    lower_bound_ptr_avx2(q, min, max)
 }
 
 #[inline]
@@ -631,8 +726,6 @@ unsafe fn repair_ivf_avx2(
 ) {
     let mut cands = [(usize::MAX, i64::MAX); IVF_REPAIR_CAND_LIMIT];
     let mut cand_count = 0usize;
-    let min_ptr = idx.ivf_min_ptr();
-    let max_ptr = idx.ivf_max_ptr();
 
     for c in 0..idx.part_count() as usize {
         let mut seen = false;
@@ -645,9 +738,7 @@ unsafe fn repair_ivf_avx2(
         if seen || idx.ivf_count(c) == 0 {
             continue;
         }
-        let min = read_qv(min_ptr, c * STORE_DIM * 2);
-        let max = read_qv(max_ptr, c * STORE_DIM * 2);
-        let lb = lower_bound_vec(query, &min, &max);
+        let lb = lower_bound_ivf_cluster_avx2(idx, c, query);
         if lb < best_dists[K - 1] {
             insert_cluster_probe(c, lb, &mut cands, &mut cand_count);
         }
@@ -828,7 +919,7 @@ unsafe fn fraud_count_pair_avx2(idx: &IndexReader, query: &[i16; STORE_DIM]) -> 
     let key = partition_key(query);
     let primary = idx.part_by_key(key);
     if primary >= 0 {
-        let (root, _len, _min, _max) = read_partition(idx, primary as usize);
+        let (root, _len) = read_partition_meta(idx, primary as usize);
         if search_node_pair_avx2(
             idx,
             root,
@@ -848,8 +939,7 @@ unsafe fn fraud_count_pair_avx2(idx: &IndexReader, query: &[i16; STORE_DIM]) -> 
         if p == primary {
             continue;
         }
-        let (_root, _len, min, max) = read_partition(idx, p as usize);
-        let lb = lower_bound_vec(query, &min, &max);
+        let lb = lower_bound_partition_avx2(idx, p as usize, query);
         if lb >= best_dists[K - 1] {
             continue;
         }
@@ -862,7 +952,7 @@ unsafe fn fraud_count_pair_avx2(idx: &IndexReader, query: &[i16; STORE_DIM]) -> 
         if lb >= best_dists[K - 1] {
             break;
         }
-        let (root, _len, _min, _max) = read_partition(idx, part_idx as usize);
+        let (root, _len) = read_partition_meta(idx, part_idx as usize);
         if search_node_pair_avx2(
             idx,
             root,
@@ -902,16 +992,14 @@ unsafe fn search_node_pair_avx2(
 
     loop {
         if current_bound < best_dists[K - 1] {
-            let (left, right, start, len, _lo, _hi) = read_node(idx, current as usize);
+            let (left, right, start, len) = read_node_meta(idx, current as usize);
             if left < 0 {
                 if scan_leaf_pair_avx2(idx, start, len, q_pairs, best_dists, best_labels) {
                     return true;
                 }
             } else {
-                let (_, _, _, _, lmin, lmax) = read_node(idx, left as usize);
-                let (_, _, _, _, rmin, rmax) = read_node(idx, right as usize);
-                let lb = lower_bound_vec(query, &lmin, &lmax);
-                let rb = lower_bound_vec(query, &rmin, &rmax);
+                let lb = lower_bound_node_avx2(idx, left as usize, query);
+                let rb = lower_bound_node_avx2(idx, right as usize, query);
                 let (near, near_b, far, far_b) = if lb <= rb {
                     (left, lb, right, rb)
                 } else {
@@ -981,7 +1069,7 @@ unsafe fn fraud_count_exact_avx2(idx: &IndexReader, query: &[i16; STORE_DIM]) ->
     let key = partition_key(query);
     let primary = idx.part_by_key(key);
     if primary >= 0 {
-        let (root, _len, _min, _max) = read_partition(idx, primary as usize);
+        let (root, _len) = read_partition_meta(idx, primary as usize);
         if search_node_avx2(idx, root, 0, query, &mut best_dists, &mut best_labels) {
             return sum_labels(&best_labels);
         }
@@ -993,8 +1081,7 @@ unsafe fn fraud_count_exact_avx2(idx: &IndexReader, query: &[i16; STORE_DIM]) ->
         if p == primary {
             continue;
         }
-        let (_root, _len, min, max) = read_partition(idx, p as usize);
-        let lb = lower_bound_vec(query, &min, &max);
+        let lb = lower_bound_partition_avx2(idx, p as usize, query);
         if lb >= best_dists[K - 1] {
             continue;
         }
@@ -1007,7 +1094,7 @@ unsafe fn fraud_count_exact_avx2(idx: &IndexReader, query: &[i16; STORE_DIM]) ->
         if lb >= best_dists[K - 1] {
             break;
         }
-        let (root, _len, _min, _max) = read_partition(idx, part_idx as usize);
+        let (root, _len) = read_partition_meta(idx, part_idx as usize);
         if search_node_avx2(idx, root, lb, query, &mut best_dists, &mut best_labels) {
             break;
         }
@@ -1038,16 +1125,14 @@ unsafe fn search_node_avx2(
 
     loop {
         if current_bound < best_dists[K - 1] {
-            let (left, right, start, len, _lo, _hi) = read_node(idx, current as usize);
+            let (left, right, start, len) = read_node_meta(idx, current as usize);
             if left < 0 {
                 if scan_leaf_avx2(idx, start, len, query, best_dists, best_labels) {
                     return true;
                 }
             } else {
-                let (_, _, _, _, lmin, lmax) = read_node(idx, left as usize);
-                let (_, _, _, _, rmin, rmax) = read_node(idx, right as usize);
-                let lb = lower_bound_vec(query, &lmin, &lmax);
-                let rb = lower_bound_vec(query, &rmin, &rmax);
+                let lb = lower_bound_node_avx2(idx, left as usize, query);
+                let rb = lower_bound_node_avx2(idx, right as usize, query);
                 let (near, near_b, far, far_b) = if lb <= rb {
                     (left, lb, right, rb)
                 } else {
@@ -1165,7 +1250,7 @@ fn fraud_count_scalar(idx: &IndexReader, query: &[i16; STORE_DIM]) -> u8 {
     let key = partition_key(query);
     let primary = idx.part_by_key(key);
     if primary >= 0 {
-        let (root, _len, _min, _max) = read_partition(idx, primary as usize);
+        let (root, _len) = read_partition_meta(idx, primary as usize);
         if search_node_scalar(idx, root, 0, query, &mut best_dists, &mut best_labels) {
             return sum_labels(&best_labels);
         }
@@ -1177,8 +1262,7 @@ fn fraud_count_scalar(idx: &IndexReader, query: &[i16; STORE_DIM]) -> u8 {
         if p == primary {
             continue;
         }
-        let (_root, _len, min, max) = read_partition(idx, p as usize);
-        let lb = lower_bound_vec(query, &min, &max);
+        let lb = lower_bound_partition_scalar(idx, p as usize, query);
         if lb >= best_dists[K - 1] {
             continue;
         }
@@ -1191,7 +1275,7 @@ fn fraud_count_scalar(idx: &IndexReader, query: &[i16; STORE_DIM]) -> u8 {
         if lb >= best_dists[K - 1] {
             break;
         }
-        let (root, _len, _min, _max) = read_partition(idx, part_idx as usize);
+        let (root, _len) = read_partition_meta(idx, part_idx as usize);
         if search_node_scalar(idx, root, lb, query, &mut best_dists, &mut best_labels) {
             break;
         }
@@ -1219,16 +1303,14 @@ fn search_node_scalar(
 
     loop {
         if current_bound < best_dists[K - 1] {
-            let (left, right, start, len, _lo, _hi) = read_node(idx, current as usize);
+            let (left, right, start, len) = read_node_meta(idx, current as usize);
             if left < 0 {
                 if scan_leaf_scalar(idx, start, len, query, best_dists, best_labels) {
                     return true;
                 }
             } else {
-                let (_, _, _, _, lmin, lmax) = read_node(idx, left as usize);
-                let (_, _, _, _, rmin, rmax) = read_node(idx, right as usize);
-                let lb = lower_bound_vec(query, &lmin, &lmax);
-                let rb = lower_bound_vec(query, &rmin, &rmax);
+                let lb = lower_bound_node_scalar(idx, left as usize, query);
+                let rb = lower_bound_node_scalar(idx, right as usize, query);
                 let (near, near_b, far, far_b) = if lb <= rb {
                     (left, lb, right, rb)
                 } else {

@@ -13,8 +13,10 @@
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,10 +29,32 @@
 #include <unistd.h>
 
 #define MAX_BACKENDS 32
+#define DEFAULT_ACCEPT_BATCH 64
+
+typedef struct {
+    int fd;
+    char dummy;
+    struct iovec iov;
+    union {
+        struct cmsghdr cm;
+        char buf[CMSG_SPACE(sizeof(int))];
+    } control;
+    struct msghdr msg;
+    struct cmsghdr *cmsg;
+} backend_t;
+
+static int getenv_int(const char *name, int fallback) {
+    const char *v = getenv(name);
+    if (!v || !*v) return fallback;
+    int parsed = atoi(v);
+    return parsed > 0 ? parsed : fallback;
+}
 
 static int connect_backend(const char *path) {
     int fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
     if (fd < 0) return -1;
+    int sndbuf = 256 * 1024;
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
     struct sockaddr_un addr = {0};
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
@@ -39,6 +63,22 @@ static int connect_backend(const char *path) {
         return -1;
     }
     return fd;
+}
+
+static void init_backend(backend_t *b, int fd) {
+    memset(b, 0, sizeof(*b));
+    b->fd = fd;
+    b->dummy = 1;
+    b->iov.iov_base = &b->dummy;
+    b->iov.iov_len = 1;
+    b->msg.msg_iov = &b->iov;
+    b->msg.msg_iovlen = 1;
+    b->msg.msg_control = b->control.buf;
+    b->msg.msg_controllen = sizeof(b->control.buf);
+    b->cmsg = CMSG_FIRSTHDR(&b->msg);
+    b->cmsg->cmsg_level = SOL_SOCKET;
+    b->cmsg->cmsg_type = SCM_RIGHTS;
+    b->cmsg->cmsg_len = CMSG_LEN(sizeof(int));
 }
 
 static int wait_for_socket(const char *path) {
@@ -53,30 +93,23 @@ static int wait_for_socket(const char *path) {
     return -1;
 }
 
-static int send_fd(int dst, int fd) {
-    char dummy = 0;
-    struct iovec iov = { .iov_base = &dummy, .iov_len = 1 };
-    union {
-        struct cmsghdr cm;
-        char buf[CMSG_SPACE(sizeof(int))];
-    } u;
-    memset(&u, 0, sizeof(u));
-    struct msghdr mh = {0};
-    mh.msg_iov = &iov;
-    mh.msg_iovlen = 1;
-    mh.msg_control = u.buf;
-    mh.msg_controllen = sizeof(u.buf);
-    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&mh);
-    cmsg->cmsg_level = SOL_SOCKET;
-    cmsg->cmsg_type = SCM_RIGHTS;
-    cmsg->cmsg_len = CMSG_LEN(sizeof(int));
-    memcpy(CMSG_DATA(cmsg), &fd, sizeof(int));
+static int send_fd_with_flags(backend_t *dst, int fd, int flags) {
+    dst->msg.msg_controllen = sizeof(dst->control.buf);
+    memcpy(CMSG_DATA(dst->cmsg), &fd, sizeof(int));
     for (;;) {
-        ssize_t r = sendmsg(dst, &mh, MSG_NOSIGNAL);
+        ssize_t r = sendmsg(dst->fd, &dst->msg, MSG_NOSIGNAL | flags);
         if (r > 0) return 0;
         if (r < 0 && errno == EINTR) continue;
         return -1;
     }
+}
+
+static int send_fd(backend_t *dst, int fd) {
+    return send_fd_with_flags(dst, fd, MSG_DONTWAIT);
+}
+
+static int send_fd_blocking(backend_t *dst, int fd) {
+    return send_fd_with_flags(dst, fd, 0);
 }
 
 static int parse_backends(const char *env, char *paths[MAX_BACKENDS]) {
@@ -99,8 +132,8 @@ int main(int argc, char **argv) {
 
     int port = 9999;
     if (getenv("LB_PORT")) port = atoi(getenv("LB_PORT"));
-    int backlog = 4096;
-    if (getenv("LB_BACKLOG")) backlog = atoi(getenv("LB_BACKLOG"));
+    int backlog = getenv_int("LB_BACKLOG", 4096);
+    int accept_batch = getenv_int("LB_ACCEPT_BATCH", DEFAULT_ACCEPT_BATCH);
 
     const char *socks_env = getenv("API_SOCKETS");
     if (!socks_env || !*socks_env) socks_env = "/sockets/api1.sock,/sockets/api2.sock";
@@ -113,7 +146,7 @@ int main(int argc, char **argv) {
     }
 
     // Espera todas as APIs estarem prontas e conecta.
-    int backends[MAX_BACKENDS];
+    backend_t backends[MAX_BACKENDS];
     for (int i = 0; i < nb; i++) {
         fprintf(stderr, "[lb] aguardando %s\n", paths[i]);
         if (wait_for_socket(paths[i]) < 0) {
@@ -131,12 +164,12 @@ int main(int argc, char **argv) {
             fprintf(stderr, "[lb] falha conectando %s\n", paths[i]);
             return 4;
         }
-        backends[i] = fd;
+        init_backend(&backends[i], fd);
         fprintf(stderr, "[lb] conectado em %s (fd=%d)\n", paths[i], fd);
     }
 
     // Socket de escuta TCP.
-    int lfd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    int lfd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (lfd < 0) {
         perror("socket");
         return 5;
@@ -159,23 +192,40 @@ int main(int argc, char **argv) {
         return 7;
     }
 
-    fprintf(stderr, "[lb] escutando :%d backlog=%d, %d backends\n", port, backlog, nb);
+    fprintf(stderr, "[lb] escutando :%d backlog=%d batch=%d, %d backends\n", port, backlog, accept_batch, nb);
 
     int rr = 0;
     for (;;) {
-        int cfd = accept4(lfd, NULL, NULL, SOCK_CLOEXEC);
-        if (cfd < 0) {
-            if (errno == EINTR) continue;
-            continue;
-        }
-        int one = 1;
-        setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-        int target = backends[rr];
-        rr = (rr + 1) % nb;
-        if (send_fd(target, cfd) < 0) {
+        int accepted = 0;
+        while (accepted < accept_batch) {
+            int cfd = accept4(lfd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+            if (cfd < 0) {
+                if (errno == EINTR) continue;
+                if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                break;
+            }
+            accepted++;
+            int one = 1;
+            setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+            setsockopt(cfd, IPPROTO_TCP, TCP_QUICKACK, &one, sizeof(one));
+            int first = rr;
+            rr = (rr + 1) % nb;
+            int ok = 0;
+            for (int off = 0; off < nb; off++) {
+                int target = (first + off) % nb;
+                if (send_fd(&backends[target], cfd) == 0) {
+                    ok = 1;
+                    break;
+                }
+            }
+            if (!ok) {
+                (void)send_fd_blocking(&backends[first], cfd);
+            }
             close(cfd);
-            continue;
         }
-        close(cfd);
+        if (accepted == 0) {
+            struct pollfd pfd = { .fd = lfd, .events = POLLIN, .revents = 0 };
+            poll(&pfd, 1, -1);
+        }
     }
 }

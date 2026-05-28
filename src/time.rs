@@ -1,8 +1,8 @@
 #[derive(Clone, Copy, Debug)]
 pub struct Stamp {
     pub epoch_minutes: i64,
-    pub hour: u8,    
-    pub weekday: u8, 
+    pub hour: u8,
+    pub weekday: u8,
 }
 
 #[inline]

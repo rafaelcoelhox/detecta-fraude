@@ -21,6 +21,8 @@ const MAX_REQ_HEAD: usize = 4096;
 const MAX_BODY: usize = 4096;
 const CONN_BUF_CAP: usize = 16384;
 const WRITE_BUF_CAP: usize = 512;
+const MAX_CLIENT_FD: usize = 65_536;
+const DEFAULT_CONN_POOL_INIT: usize = 128;
 
 pub struct Server {
     epfd: c_int,
@@ -28,6 +30,8 @@ pub struct Server {
     index: &'static IndexReader,
     responses: &'static Responses,
     conns: Vec<Option<Box<Conn>>>,
+    conn_pool: Vec<Box<Conn>>,
+    conn_pool_cap: usize,
 }
 
 struct Conn {
@@ -47,6 +51,13 @@ impl Conn {
             write_len: 0,
             write_pos: 0,
         })
+    }
+
+    #[inline]
+    fn reset(&mut self) {
+        self.in_len = 0;
+        self.write_len = 0;
+        self.write_pos = 0;
     }
 
     #[inline]
@@ -81,8 +92,17 @@ impl Server {
             uds_fd,
             index,
             responses,
-            conns: Vec::with_capacity(256),
+            conns: {
+                let mut slots = Vec::with_capacity(MAX_CLIENT_FD);
+                slots.resize_with(MAX_CLIENT_FD, || None);
+                slots
+            },
+            conn_pool: Vec::new(),
+            conn_pool_cap: conn_pool_cap(),
         };
+        for _ in 0..s.conn_pool_cap.min(DEFAULT_CONN_POOL_INIT) {
+            s.conn_pool.push(Conn::new());
+        }
         s.register(uds_fd)?;
         Ok(s)
     }
@@ -111,12 +131,23 @@ impl Server {
         self.conns.get_mut(idx)?.as_mut()
     }
 
-    fn put_conn(&mut self, fd: c_int, conn: Box<Conn>) {
+    fn alloc_conn(&mut self) -> Box<Conn> {
+        match self.conn_pool.pop() {
+            Some(mut c) => {
+                c.reset();
+                c
+            }
+            None => Conn::new(),
+        }
+    }
+
+    fn put_conn(&mut self, fd: c_int, conn: Box<Conn>) -> bool {
         let idx = fd as usize;
-        if self.conns.len() <= idx {
-            self.conns.resize_with(idx + 1, || None);
+        if idx >= self.conns.len() {
+            return false;
         }
         self.conns[idx] = Some(conn);
+        true
     }
 
     fn take_conn(&mut self, fd: c_int) -> Option<Box<Conn>> {
@@ -151,6 +182,10 @@ impl Server {
         loop {
             match recv_fds(self.uds_fd) {
                 Ok(Some(fd)) => {
+                    if fd < 0 || fd as usize >= MAX_CLIENT_FD {
+                        unsafe { libc::close(fd) };
+                        continue;
+                    }
                     if let Err(_) = set_nonblocking(fd) {
                         unsafe { libc::close(fd) };
                         continue;
@@ -160,7 +195,12 @@ impl Server {
                         unsafe { libc::close(fd) };
                         continue;
                     }
-                    self.put_conn(fd, Conn::new());
+                    let conn = self.alloc_conn();
+                    if !self.put_conn(fd, conn) {
+                        self.deregister(fd);
+                        unsafe { libc::close(fd) };
+                        continue;
+                    }
                     self.handle_conn(fd, EPOLLIN as u32);
                 }
                 Ok(None) => return Ok(()),
@@ -229,7 +269,12 @@ impl Server {
 
     fn close_conn(&mut self, fd: c_int) {
         self.deregister(fd);
-        self.take_conn(fd);
+        if let Some(mut conn) = self.take_conn(fd) {
+            conn.reset();
+            if self.conn_pool.len() < self.conn_pool_cap {
+                self.conn_pool.push(conn);
+            }
+        }
         unsafe { libc::close(fd) };
     }
 
@@ -514,6 +559,13 @@ fn update_interest(epfd: c_int, fd: c_int, want_write: bool) {
     unsafe {
         epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &mut ev);
     }
+}
+
+fn conn_pool_cap() -> usize {
+    std::env::var("CONN_POOL_CAP")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_CONN_POOL_INIT)
 }
 
 fn set_nonblocking(fd: c_int) -> io::Result<()> {
