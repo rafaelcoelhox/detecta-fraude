@@ -159,27 +159,13 @@ impl Server {
     pub fn run(&mut self) -> io::Result<()> {
         const MAX_EVENTS: usize = 128;
         let mut events: [epoll_event; MAX_EVENTS] = unsafe { MaybeUninit::zeroed().assume_init() };
-        let spin = std::time::Duration::from_micros(epoll_spin_us());
-        let idle_timeout = epoll_timeout_ms();
+        let timeout = epoll_timeout_ms();
         loop {
-            // Hot path: tenta sem bloquear. Se nada chegou, faz busy-poll por um
-            // orçamento curto antes de dormir. Mantém o worker "quente" e evita o
-            // round-trip de wakeup do scheduler, que domina o p99 quando os núcleos
-            // são poucos e lentos (caso da máquina oficial).
-            let mut n = unsafe { epoll_wait(self.epfd, events.as_mut_ptr(), MAX_EVENTS as i32, 0) };
-            if n == 0 && !spin.is_zero() {
-                let start = std::time::Instant::now();
-                while start.elapsed() < spin {
-                    n = unsafe { epoll_wait(self.epfd, events.as_mut_ptr(), MAX_EVENTS as i32, 0) };
-                    if n != 0 {
-                        break;
-                    }
-                    std::hint::spin_loop();
-                }
-            }
-            if n == 0 {
-                n = unsafe { epoll_wait(self.epfd, events.as_mut_ptr(), MAX_EVENTS as i32, idle_timeout) };
-            }
+            // Um único epoll_wait com timeout finito. Com EPIOCSPARAMS ligado
+            // (configure_busy_poll), o kernel faz busy-poll do socket antes de
+            // dormir — fareja o pacote na fila da veth sem o round-trip de wakeup
+            // do scheduler, que é o que domina o p99 na máquina oficial.
+            let n = unsafe { epoll_wait(self.epfd, events.as_mut_ptr(), MAX_EVENTS as i32, timeout) };
             if n < 0 {
                 let err = io::Error::last_os_error();
                 if err.raw_os_error() == Some(EINTR) {
@@ -633,15 +619,7 @@ fn env_u32(name: &str, default: u32) -> u32 {
         .unwrap_or(default)
 }
 
-// Orçamento de busy-poll em userspace (epoll_wait com timeout 0 em loop), em µs.
-fn epoll_spin_us() -> u64 {
-    std::env::var("EPOLL_SPIN_US")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(50)
-}
-
-// Timeout do epoll_wait quando o worker finalmente dorme (ms). -1 = bloqueio.
+// Timeout do epoll_wait quando o worker dorme entre rajadas (ms). -1 = bloqueio.
 fn epoll_timeout_ms() -> c_int {
     std::env::var("EPOLL_TIMEOUT_MS")
         .ok()
