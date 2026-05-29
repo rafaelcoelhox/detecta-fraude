@@ -3,6 +3,7 @@ services:
     image: ghcr.io/rafaelcoelhox/detecta-fraude-lb:fd-p99-202605281043
     container_name: detecta-lb
     platform: linux/amd64
+    cpuset: "2,3"
     ports:
       - "9999:9999"
     networks:
@@ -30,9 +31,10 @@ services:
           memory: "20MB"
 
   api1:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:epollidle-20260528-feb805b
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:leaf256-20260528
     container_name: detecta-api1
     platform: linux/amd64
+    cpuset: "0"
     networks:
       - rinha
     volumes:
@@ -44,7 +46,11 @@ services:
       API_WARMUP_QUERIES: "4096"
       INDEX_MLOCK: "1"
       INDEX_PATH: "/index/index.bin"
-      EPOLL_SPIN_US: "150"
+      # spin curto: sob contenção com o k6 co-localizado na MacMini (2 cores),
+      # spin alto rouba CPU do k6 que MEDE a latência e a infla. Bench de contenção
+      # mostrou spin=150 pior; 30 mantém readiness de follow-ups e corta o roubo
+      # pela metade. Fallback seguro: 150. A/B na máquina real: 0, 30, 150.
+      EPOLL_SPIN_US: "30"
       EPOLL_IDLE_US: "250"
     logging:
       driver: none
@@ -62,9 +68,10 @@ services:
           memory: "165MB"
 
   api2:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:epollidle-20260528-feb805b
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:leaf256-20260528
     container_name: detecta-api2
     platform: linux/amd64
+    cpuset: "1"
     network_mode: "none"
     volumes:
       - sockets:/sockets
@@ -75,7 +82,11 @@ services:
       API_WARMUP_QUERIES: "4096"
       INDEX_MLOCK: "1"
       INDEX_PATH: "/index/index.bin"
-      EPOLL_SPIN_US: "150"
+      # spin curto: sob contenção com o k6 co-localizado na MacMini (2 cores),
+      # spin alto rouba CPU do k6 que MEDE a latência e a infla. Bench de contenção
+      # mostrou spin=150 pior; 30 mantém readiness de follow-ups e corta o roubo
+      # pela metade. Fallback seguro: 150. A/B na máquina real: 0, 30, 150.
+      EPOLL_SPIN_US: "30"
       EPOLL_IDLE_US: "250"
     logging:
       driver: none
