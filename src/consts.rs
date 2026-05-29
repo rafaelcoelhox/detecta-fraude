@@ -8,8 +8,6 @@ pub const MAX_MERCHANT_AVG_AMOUNT: f64 = 10_000.0;
 
 pub const DEFAULT_MCC_RISK: f64 = 0.5;
 
-// Lookup direto para MCCs conhecidos (resources/mcc_risk.json).
-// Mantemos um array linear: 10 entradas, branch direta no parser.
 pub const MCC_RISK: &[(&[u8; 4], f64)] = &[
     (b"5411", 0.15),
     (b"5812", 0.30),

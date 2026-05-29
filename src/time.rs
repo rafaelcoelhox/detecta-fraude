@@ -21,7 +21,6 @@ fn dig4(b: &[u8], off: usize) -> u32 {
     d0 * 1000 + d1 * 100 + d2 * 10 + d3
 }
 
-// Algoritmo Howard Hinnant: days_from_civil. Suporta intervalo amplo, exato.
 #[inline]
 fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
     let y = y - (m <= 2) as i32;
@@ -36,7 +35,6 @@ fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
 
 #[inline]
 pub fn parse_iso8601(buf: &[u8]) -> Option<Stamp> {
-    // o dataset oficial respeita o formato.
     if buf.len() < 20 {
         return None;
     }
@@ -52,10 +50,6 @@ pub fn parse_iso8601(buf: &[u8]) -> Option<Stamp> {
     let days = days_from_civil(year, month, day);
     let total_seconds = days * 86_400 + hour as i64 * 3600 + minute as i64 * 60 + second as i64;
     let epoch_minutes = total_seconds.div_euclid(60);
-    // 1970-01-01 (days=0) é uma quinta-feira. Na convenção oficial segunda=0,
-    // domingo=6, quinta=3. Ajustamos.
-    // (days + 3) mod 7 produz 0=segunda quando days=4 (1970-01-05, segunda).
-    // days=0 -> (0+3)%7 = 3 = quinta. ok.
     let weekday = ((days.rem_euclid(7) + 3).rem_euclid(7)) as u8;
     Some(Stamp {
         epoch_minutes,
@@ -72,17 +66,13 @@ mod tests {
     fn parse_basic() {
         let s = parse_iso8601(b"2026-03-11T20:23:35Z").unwrap();
         assert_eq!(s.hour, 20);
-        // 2026-03-11 é quarta-feira => 2
         assert_eq!(s.weekday, 2);
     }
 
     #[test]
     fn weekday_known_dates() {
-        // 1970-01-05 é segunda.
         assert_eq!(parse_iso8601(b"1970-01-05T00:00:00Z").unwrap().weekday, 0);
-        // 1970-01-04 é domingo.
         assert_eq!(parse_iso8601(b"1970-01-04T00:00:00Z").unwrap().weekday, 6);
-        // 2026-03-15 é domingo.
         assert_eq!(parse_iso8601(b"2026-03-15T00:00:00Z").unwrap().weekday, 6);
     }
 

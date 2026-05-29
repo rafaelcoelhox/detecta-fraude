@@ -46,10 +46,6 @@ services:
       API_WARMUP_QUERIES: "4096"
       INDEX_MLOCK: "1"
       INDEX_PATH: "/index/index.bin"
-      # spin curto: sob contenção com o k6 co-localizado na MacMini (2 cores),
-      # spin alto rouba CPU do k6 que MEDE a latência e a infla. Bench de contenção
-      # mostrou spin=150 pior; 30 mantém readiness de follow-ups e corta o roubo
-      # pela metade. Fallback seguro: 150. A/B na máquina real: 0, 30, 150.
       EPOLL_SPIN_US: "30"
       EPOLL_IDLE_US: "250"
     logging:
@@ -82,10 +78,6 @@ services:
       API_WARMUP_QUERIES: "4096"
       INDEX_MLOCK: "1"
       INDEX_PATH: "/index/index.bin"
-      # spin curto: sob contenção com o k6 co-localizado na MacMini (2 cores),
-      # spin alto rouba CPU do k6 que MEDE a latência e a infla. Bench de contenção
-      # mostrou spin=150 pior; 30 mantém readiness de follow-ups e corta o roubo
-      # pela metade. Fallback seguro: 150. A/B na máquina real: 0, 30, 150.
       EPOLL_SPIN_US: "30"
       EPOLL_IDLE_US: "250"
     logging:

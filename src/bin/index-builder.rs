@@ -1,5 +1,3 @@
-// Uso:
-//   index-builder <references.json.gz> <out.bin>
 
 #[cfg(feature = "builder")]
 fn main() {
@@ -77,14 +75,12 @@ fn parse_references(buf: &[u8], mut cb: impl FnMut(&[f64; detecta_fraude::DIM], 
         }
     }
     while i < buf.len() {
-        // procura `{`
         while i < buf.len() && buf[i] != b'{' {
             i += 1;
         }
         if i >= buf.len() {
             break;
         }
-        // procura `"vector"`
         let vec_pos = find(buf, i, b"\"vector\"").expect("vector key");
         let bracket = find_byte(buf, vec_pos, b'[').expect("vector [");
         let (vec, after) = parse_float_array(buf, bracket + 1);
@@ -93,13 +89,11 @@ fn parse_references(buf: &[u8], mut cb: impl FnMut(&[f64; detecta_fraude::DIM], 
         }
         let mut arr = [0f64; DIM];
         arr.copy_from_slice(&vec);
-        // procura `"label"`
         let lbl_pos = find(buf, after, b"\"label\"").expect("label key");
         let q1 = find_byte(buf, lbl_pos + 7, b'"').expect("label quote");
         let q2 = find_byte(buf, q1 + 1, b'"').expect("label quote end");
         let label = &buf[q1 + 1..q2];
         cb(&arr, label);
-        // procura `}` fim do objeto
         let mut j = q2 + 1;
         let mut depth = 1;
         while j < buf.len() && depth > 0 {

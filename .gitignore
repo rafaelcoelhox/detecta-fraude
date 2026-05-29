@@ -3,6 +3,4 @@ target/
 .idea/
 .vscode/
 
-# Dataset oficial (50 MB) — não versionar; copiar manualmente do
-# repositório oficial antes de rodar `docker compose build`.
 resources/references.json.gz

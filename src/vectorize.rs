@@ -117,19 +117,18 @@ mod tests {
         }"#;
         let p = parse_payload(s).unwrap();
         let v = vectorize_f64(&p);
-        // Esperado: [0.0041, 0.1667, 0.05, 0.7826, 0.3333, -1, -1, 0.0292, 0.15, 0, 1, 0, 0.15, 0.006]
         assert!(approx(v[0], 0.004112, 1e-4));
         assert!(approx(v[1], 2.0 / 12.0, 1e-4));
         assert!(approx(v[2], 0.05, 1e-4));
         assert!(approx(v[3], 18.0 / 23.0, 1e-3));
-        assert!(approx(v[4], 2.0 / 6.0, 1e-3)); // quarta-feira => 2
+        assert!(approx(v[4], 2.0 / 6.0, 1e-3));
         assert_eq!(v[5], -1.0);
         assert_eq!(v[6], -1.0);
         assert!(approx(v[7], 0.02923, 1e-4));
         assert!(approx(v[8], 3.0 / 20.0, 1e-4));
         assert_eq!(v[9], 0.0);
         assert_eq!(v[10], 1.0);
-        assert_eq!(v[11], 0.0); // MERC-016 está em known
+        assert_eq!(v[11], 0.0);
         assert!(approx(v[12], 0.15, 1e-9));
         assert!(approx(v[13], 60.25 / 10000.0, 1e-9));
     }
@@ -146,12 +145,10 @@ mod tests {
         }"#;
         let p = parse_payload(s).unwrap();
         let v = vectorize_f64(&p);
-        // Esperado: [0.9506, 0.8333, 1.0, 0.2174, 0.8333, -1, -1, 0.9523, 1.0, 0, 1, 1, 0.75, 0.0055]
         assert!(approx(v[0], 0.950597, 1e-4));
         assert!(approx(v[1], 10.0 / 12.0, 1e-4));
-        assert_eq!(v[2], 1.0); // clamp
+        assert_eq!(v[2], 1.0);
         assert!(approx(v[3], 5.0 / 23.0, 1e-4));
-        // 2026-03-14 é sábado => 5
         assert!(approx(v[4], 5.0 / 6.0, 1e-4));
         assert_eq!(v[5], -1.0);
         assert_eq!(v[6], -1.0);
@@ -159,8 +156,8 @@ mod tests {
         assert_eq!(v[8], 1.0);
         assert_eq!(v[9], 0.0);
         assert_eq!(v[10], 1.0);
-        assert_eq!(v[11], 1.0); // unknown
-        assert!(approx(v[12], 0.75, 1e-9)); // 7802
+        assert_eq!(v[11], 1.0);
+        assert!(approx(v[12], 0.75, 1e-9));
         assert!(approx(v[13], 0.005486, 1e-9));
     }
 
@@ -177,7 +174,6 @@ mod tests {
         let s = br#"{"id":"x","transaction":{"amount":1,"installments":1,"requested_at":"2026-03-11T20:23:35Z"},"customer":{"avg_amount":1,"tx_count_24h":0,"known_merchants":[]},"merchant":{"id":"A","mcc":"5411","avg_amount":1},"terminal":{"is_online":false,"card_present":true,"km_from_home":1},"last_transaction":{"timestamp":"2026-03-11T14:58:35Z","km_from_current":18.8626479774}}"#;
         let p = parse_payload(s).unwrap();
         let v = vectorize_f64(&p);
-        // delta = 325 minutos -> 325/1440 = 0.22569...
         assert!(approx(v[5], 325.0 / 1440.0, 1e-9));
         assert!(approx(v[6], 18.8626479774 / 1000.0, 1e-9));
     }

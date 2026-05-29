@@ -1,6 +1,3 @@
-// Servidor HTTP single-threaded com epoll. Conexões TCP chegam
-// como file descriptors enviados pelo LB via SCM_RIGHTS — a API não escuta
-// porta TCP.
 
 use crate::index::IndexReader;
 use crate::parse::parse_payload;
@@ -328,8 +325,6 @@ impl Server {
                     body_start,
                     body_end,
                 } => {
-                    // SAFETY: parse_request retornou slices que apontam para conn.in_buf;
-                    // copiamos os endereços para evitar aliasing e poder mutar conn.in_buf.
                     let m_ptr = method.as_ptr();
                     let m_len = method.len();
                     let p_ptr = path.as_ptr();
@@ -439,7 +434,6 @@ fn find_double_crlf(buf: &[u8]) -> Option<usize> {
     if buf.len() < 4 {
         return None;
     }
-    // Procura primeiro um \n e depois confirma o padrão completo.
     let mut i = 3;
     while i < buf.len() {
         if buf[i] == b'\n' && buf[i - 1] == b'\r' && buf[i - 2] == b'\n' && buf[i - 3] == b'\r' {
@@ -591,9 +585,7 @@ fn conn_pool_cap() -> usize {
         .unwrap_or(DEFAULT_CONN_POOL_INIT)
 }
 
-// --- busy-poll do epoll: corta a latência de wakeup do scheduler no tail ---
 
-// Layout da UAPI do kernel (include/uapi/linux/eventpoll.h, kernel >= 6.9).
 #[repr(C)]
 struct EpollParams {
     busy_poll_usecs: u32,
@@ -602,16 +594,11 @@ struct EpollParams {
     _pad: u8,
 }
 
-// EPIOCSPARAMS = _IOW(0x8A, 0x01, struct epoll_params), montado a partir da
-// fórmula _IOC padrão do asm-generic (x86_64): dir=WRITE(1), type=0x8A, nr=1.
 const fn iow(ty: u32, nr: u32, size: u32) -> libc::c_ulong {
     ((1u32 << 30) | (size << 16) | (ty << 8) | nr) as libc::c_ulong
 }
 const EPIOCSPARAMS: libc::c_ulong = iow(0x8A, 0x01, std::mem::size_of::<EpollParams>() as u32);
 
-// Pede ao kernel para busy-poll do epoll antes de dormir. Best-effort: em kernel
-// sem o ioctl, apenas segue sem busy-poll de kernel — o spin de userspace no
-// run() continua valendo de qualquer forma.
 fn configure_busy_poll(epfd: c_int) {
     let usecs = env_u32("EPOLL_BUSY_POLL_US", 50);
     let prefer = env_u32("EPOLL_PREFER_BUSY_POLL", 1) as u8;
@@ -650,7 +637,6 @@ fn epoll_idle_us() -> u64 {
         .unwrap_or(0)
 }
 
-// Timeout do epoll_wait quando o worker dorme entre rajadas (ms). -1 = bloqueio.
 fn epoll_timeout_ms() -> c_int {
     std::env::var("EPOLL_TIMEOUT_MS")
         .ok()
@@ -697,7 +683,6 @@ fn set_nonblocking(fd: c_int) -> io::Result<()> {
 fn set_tcp_options(fd: c_int) {
     let on: c_int = 1;
     unsafe {
-        // TCP_NODELAY: payload small + single response, Nagle só atrapalha.
         libc::setsockopt(
             fd,
             libc::IPPROTO_TCP,
@@ -705,7 +690,6 @@ fn set_tcp_options(fd: c_int) {
             &on as *const c_int as *const c_void,
             std::mem::size_of::<c_int>() as libc::socklen_t,
         );
-        // TCP_QUICKACK: ACK imediato; reduz delay no handshake do k6 sob carga.
         libc::setsockopt(
             fd,
             libc::IPPROTO_TCP,

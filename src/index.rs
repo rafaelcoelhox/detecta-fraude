@@ -1,9 +1,6 @@
 use crate::{DIM, K, SCALE, STORE_DIM};
 use std::path::Path;
 
-/// Contadores de trabalho por query, ativados pela feature `knn_stats`.
-/// Sem a feature, as funções `inc_*`/`set_*` compilam para no-op (inline
-/// vazio), então o caminho de produção (fraud-api) fica intacto e sem custo.
 pub mod stats {
     #[cfg(feature = "knn_stats")]
     use std::cell::Cell;
@@ -509,7 +506,6 @@ pub fn partition_key(v: &[i16; STORE_DIM]) -> u32 {
     }
     let mr = v[12];
     if mr <= 2047 {
-        // bucket 0
     } else if mr <= 4095 {
         key |= 1 << 4;
     } else if mr <= 6143 {
@@ -1478,7 +1474,6 @@ fn scan_leaf_scalar(
     false
 }
 
-// ------------------------------ Builder ------------------------------
 
 #[cfg(feature = "builder")]
 pub mod build {

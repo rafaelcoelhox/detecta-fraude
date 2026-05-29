@@ -63,7 +63,6 @@ fn read_string<'a>(buf: &'a [u8], i: usize) -> Result<(&'a [u8], usize), ParseEr
     let start = i + 1;
     let mut j = start;
     while j < buf.len() && buf[j] != b'"' {
-        // strings do contrato não contêm escapes
         j += 1;
     }
     if j >= buf.len() {
@@ -136,9 +135,6 @@ fn is_null(buf: &[u8], i: usize) -> bool {
     i + 4 <= buf.len() && &buf[i..i + 4] == b"null"
 }
 
-// Avança até encontrar o fim do valor atual a partir de uma posição que aponta
-// para o início de um valor JSON. Usado para pular campos não interessantes
-// (como `id`) sem alocar.
 fn skip_value(buf: &[u8], i: usize) -> Result<usize, ParseError> {
     let mut i = skip_ws(buf, i);
     if i >= buf.len() {
@@ -183,7 +179,6 @@ fn skip_value(buf: &[u8], i: usize) -> Result<usize, ParseError> {
         b'f' => Ok(i + 5),
         b'n' => Ok(i + 4),
         _ => {
-            // número
             while i < buf.len() {
                 let c = buf[i];
                 if c == b','
@@ -203,8 +198,6 @@ fn skip_value(buf: &[u8], i: usize) -> Result<usize, ParseError> {
     }
 }
 
-// Extrai o slice cru do array `known_merchants` (incluindo colchetes) para que
-// a busca por merchant_id seja feita com substring match sem alocar.
 fn read_array_raw<'a>(buf: &'a [u8], i: usize) -> Result<(&'a [u8], usize), ParseError> {
     let i = skip_ws(buf, i);
     if i >= buf.len() || buf[i] != b'[' {
@@ -215,8 +208,6 @@ fn read_array_raw<'a>(buf: &'a [u8], i: usize) -> Result<(&'a [u8], usize), Pars
     Ok((&buf[start..end], end))
 }
 
-// Caminha por um objeto JSON entre `{` e `}` chamando `on_key(key, value_start)`
-// para cada par. O callback retorna a próxima posição depois do valor.
 fn for_each_kv<'a, F>(buf: &'a [u8], start: usize, mut on_key: F) -> Result<usize, ParseError>
 where
     F: FnMut(&'a [u8], &'a [u8], usize) -> Result<Option<usize>, ParseError>,
@@ -364,9 +355,6 @@ pub fn parse_payload(buf: &[u8]) -> Result<RawPayload<'_>, ParseError> {
     Ok(p)
 }
 
-// Confere se `merchant_id` aparece como string dentro do slice cru de
-// known_merchants. Comparação byte-a-byte com aspas — evita falsos positivos
-// por prefix match.
 pub fn merchant_in_known(known_raw: &[u8], merchant_id: &[u8]) -> bool {
     if merchant_id.is_empty() {
         return false;

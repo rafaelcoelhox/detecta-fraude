@@ -37,41 +37,37 @@ Sem lookup por payload, sem heurísticas derivadas de `test/test-data.json`, sem
 ```
 .
 ├── Cargo.toml
-├── Dockerfile.api          # rust-builder + index-builder + distroless
-├── Dockerfile.lb           # gcc -static + scratch
-├── docker-compose.yml      # lb + api1 + api2 dentro de 1 CPU / 350MB
+├── Dockerfile.api
+├── Dockerfile.lb
+├── docker-compose.yml
 ├── info.json
-├── native/fd-lb.c          # LB em C com FD passing
-├── resources/              # references.json.gz, mcc_risk.json, normalization.json
+├── native/fd-lb.c
+├── resources/
 └── src/
     ├── lib.rs
-    ├── consts.rs           # constantes oficiais (normalization, mcc_risk)
-    ├── time.rs             # parser ISO-8601 sem deps externas
-    ├── parse.rs            # parser JSON especializado para o payload oficial
-    ├── vectorize.rs        # 14 dimensões → vetor [i16; 16] (padded para SIMD)
-    ├── index.rs            # blob particionado + KD-tree com bbox + folhas SoA AVX2
-    ├── response.rs         # 6 respostas HTTP pré-renderizadas
-    ├── server.rs           # epoll, SCM_RIGHTS, HTTP/1.1 minimalista
+    ├── consts.rs
+    ├── time.rs
+    ├── parse.rs
+    ├── vectorize.rs
+    ├── index.rs
+    ├── response.rs
+    ├── server.rs
     └── bin/
-        ├── fraud-api.rs    # binário do servidor (multi-worker por API)
-        ├── index-builder.rs# binário de build (gera /index/index.bin)
-        ├── eval-preview.rs # regressão local contra test-data.json
-        └── bench.rs        # microbench dos componentes do hot path
+        ├── fraud-api.rs
+        ├── index-builder.rs
+        ├── eval-preview.rs
+        └── bench.rs
 ```
 
 ## Como rodar localmente
 
 ```bash
-# Pré-requisito: baixar o dataset oficial (não versionado por tamanho).
 cp /caminho/para/rinha-de-backend-2026/resources/references.json.gz resources/
 
-# build das imagens (gera o índice durante o build da api, ~3 s)
 docker compose build
 
-# sobe a stack
 docker compose up -d
 
-# smoke + load test oficiais (a partir do repositório oficial)
 cd /caminho/para/rinha-de-backend-2026/test
 docker compose --profile smoke up
 docker compose --profile test up
@@ -82,7 +78,6 @@ docker compose --profile test up
 ```bash
 RUSTFLAGS="-C target-cpu=haswell" cargo test --release --features builder
 
-# Gerar índice e rodar eval-preview offline contra test-data.json
 RUSTFLAGS="-C target-cpu=haswell" cargo build --release --features builder \
     --bin index-builder --bin eval-preview --bin bench
 ./target/release/index-builder resources/references.json.gz target/idx/index.bin

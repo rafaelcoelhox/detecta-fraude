@@ -1,9 +1,3 @@
-// Mede a distribuição de trabalho/latência do KNN por query sobre a massa real
-// (test-data.json), para diagnosticar o tail do p99.
-//
-// Build: RUSTFLAGS="-C target-cpu=haswell" \
-//   cargo build --release --features "builder knn_stats" --bin knn-tail
-// Uso:   ./target/release/knn-tail <index.bin> <test-data.json>
 
 #[cfg(all(feature = "builder", feature = "knn_stats"))]
 fn main() {
@@ -52,7 +46,6 @@ fn main() {
     let v: Value = serde_json::from_slice(&raw).expect("parse test-data");
     let entries = v["entries"].as_array().expect("entries");
 
-    // pré-vetoriza tudo, tirando parse/serde do loop de medição
     let mut queries: Vec<(QVec, bool)> = Vec::with_capacity(entries.len());
     for entry in entries {
         let req = serde_json::to_vec(&entry["request"]).unwrap();
@@ -61,7 +54,6 @@ fn main() {
         queries.push((vectorize_q(&p), expected_approved));
     }
 
-    // warm-up: popula cache/TLB do índice antes de medir
     for (q, _) in &queries {
         std::hint::black_box(idx.fraud_count(q));
     }

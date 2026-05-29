@@ -1,14 +1,3 @@
-// Escuta TCP em :9999 e, para cada conexão aceita, envia o file descriptor
-// (via SCM_RIGHTS) para uma das APIs em /sockets/api{N}.sock — round-robin.
-// Nunca lê bytes da conexão, nunca inspeciona payload, nunca responde HTTP.
-//
-// Compilação: gcc -O2 -Wall -Wextra -o fd-lb fd-lb.c
-//
-// Variáveis de ambiente:
-//   LB_PORT      — porta TCP (default 9999)
-//   LB_BACKLOG   — backlog do listen (default 4096)
-//   API_SOCKETS  — sockets separados por vírgula (default /sockets/api1.sock,/sockets/api2.sock)
-//   READY_DIR    — diretório onde aparecem arquivos <name>.ready (default /sockets)
 
 #define _GNU_SOURCE
 #include <arpa/inet.h>
@@ -82,7 +71,6 @@ static void init_backend(backend_t *b, int fd) {
 }
 
 static int wait_for_socket(const char *path) {
-    // Aguarda o arquivo do socket existir (a API cria após o mmap warm-up).
     int tries = 0;
     while (tries++ < 600) {
         struct stat st;
@@ -145,7 +133,6 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    // Espera todas as APIs estarem prontas e conecta.
     backend_t backends[MAX_BACKENDS];
     for (int i = 0; i < nb; i++) {
         fprintf(stderr, "[lb] aguardando %s\n", paths[i]);
@@ -168,7 +155,6 @@ int main(int argc, char **argv) {
         fprintf(stderr, "[lb] conectado em %s (fd=%d)\n", paths[i], fd);
     }
 
-    // Socket de escuta TCP.
     int lfd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (lfd < 0) {
         perror("socket");

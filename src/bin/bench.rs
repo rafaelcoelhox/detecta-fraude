@@ -1,4 +1,3 @@
-// Micro-benchmark dos componentes do hot path: parse, vetorização, k-NN.
 
 use detecta_fraude::index::IndexReader;
 use detecta_fraude::parse::parse_payload;
@@ -30,7 +29,6 @@ fn main() {
     let idx = IndexReader::open(&PathBuf::from(&index_path)).expect("open");
     eprintln!("índice: {} pontos", idx.n_points());
 
-    // 1) Parse + vectorize
     let t = Instant::now();
     for i in 0..n_iter {
         let s = SAMPLES[i % SAMPLES.len()];
@@ -45,7 +43,6 @@ fn main() {
         parse_vec.as_nanos() as f64 / n_iter as f64 / 1000.0
     );
 
-    // 2) KNN puro (vetor pré-construído)
     let vecs: Vec<_> = SAMPLES
         .iter()
         .map(|s| {
@@ -67,7 +64,6 @@ fn main() {
         sum
     );
 
-    // 3) Pipeline completo
     let t = Instant::now();
     let mut sum = 0u64;
     for i in 0..n_iter {

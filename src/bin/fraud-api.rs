@@ -1,8 +1,3 @@
-// Variáveis de ambiente:
-//   API_SOCKET_PREFIX  — prefixo do socket por worker. Final é "<prefix>-wN.sock".
-//                         Default: "/sockets/api1"
-//   API_WORKERS        — quantidade de workers (default 2)
-//   INDEX_PATH         — caminho do índice (default /index/index.bin)
 
 use detecta_fraude::index::IndexReader;
 use detecta_fraude::response::Responses;
@@ -83,10 +78,6 @@ fn warm_up_index(index: &IndexReader) {
     std::hint::black_box(sum);
 }
 
-// Prioridade de scheduling do worker. Sob contenção com o k6 co-localizado na
-// MacMini (2 cores), uma nice negativa faz a API preemptar o k6 imediatamente ao
-// acordar — comprime o tail p95→p99 (espera por slot de CPU). Requer CAP_SYS_NICE
-// no container; sem ela, o setpriority falha em silêncio e fica em nice 0.
 fn set_worker_nice() {
     let nice: i32 = match env::var("WORKER_NICE").ok().and_then(|v| v.parse().ok()) {
         Some(n) => n,
@@ -114,7 +105,6 @@ fn run_worker(
         }
     };
 
-    // Marca o socket pronto para o LB conectar.
     if let Some(parent) = Path::new(&socket).parent() {
         let stem = Path::new(&socket)
             .file_stem()
@@ -122,7 +112,6 @@ fn run_worker(
             .to_string_lossy()
             .to_string();
         let _ = std::fs::write(parent.join(format!("{}.ready", stem)), b"1");
-        // Marker geral por prefix (último worker escreve).
         let prefix_name = Path::new(&prefix)
             .file_name()
             .unwrap()
