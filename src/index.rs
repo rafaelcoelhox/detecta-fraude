@@ -579,12 +579,16 @@ unsafe fn lower_bound_ptr_avx2(q: &[i16; STORE_DIM], min: *const i16, max: *cons
     let above = _mm256_max_epi16(_mm256_sub_epi16(qv, mx), zero);
     let gap = _mm256_max_epi16(below, above);
     let sq_pairs = _mm256_madd_epi16(gap, gap);
-    let lo = _mm256_cvtepi32_epi64(_mm256_castsi256_si128(sq_pairs));
-    let hi = _mm256_cvtepi32_epi64(_mm256_extracti128_si256(sq_pairs, 1));
-    let sum = _mm256_add_epi64(lo, hi);
-    let sum_hi = _mm256_extracti128_si256(sum, 1);
-    let sum_128 = _mm_add_epi64(_mm256_castsi256_si128(sum), sum_hi);
-    _mm_extract_epi64(sum_128, 0) + _mm_extract_epi64(sum_128, 1)
+    let mut vals = [0i32; LANES];
+    _mm256_storeu_si256(vals.as_mut_ptr() as *mut __m256i, sq_pairs);
+    vals[0] as i64
+        + vals[1] as i64
+        + vals[2] as i64
+        + vals[3] as i64
+        + vals[4] as i64
+        + vals[5] as i64
+        + vals[6] as i64
+        + vals[7] as i64
 }
 
 #[inline]
@@ -710,12 +714,16 @@ unsafe fn distance_qv_avx2(a: &[i16; STORE_DIM], b: &[i16; STORE_DIM]) -> i64 {
     let bv = _mm256_loadu_si256(b.as_ptr() as *const __m256i);
     let diff = _mm256_sub_epi16(av, bv);
     let sq_pairs = _mm256_madd_epi16(diff, diff);
-    let lo = _mm256_cvtepi32_epi64(_mm256_castsi256_si128(sq_pairs));
-    let hi = _mm256_cvtepi32_epi64(_mm256_extracti128_si256(sq_pairs, 1));
-    let sum = _mm256_add_epi64(lo, hi);
-    let sum_hi = _mm256_extracti128_si256(sum, 1);
-    let sum_128 = _mm_add_epi64(_mm256_castsi256_si128(sum), sum_hi);
-    _mm_extract_epi64(sum_128, 0) + _mm_extract_epi64(sum_128, 1)
+    let mut vals = [0i32; LANES];
+    _mm256_storeu_si256(vals.as_mut_ptr() as *mut __m256i, sq_pairs);
+    vals[0] as i64
+        + vals[1] as i64
+        + vals[2] as i64
+        + vals[3] as i64
+        + vals[4] as i64
+        + vals[5] as i64
+        + vals[6] as i64
+        + vals[7] as i64
 }
 
 #[inline(always)]
@@ -911,22 +919,25 @@ unsafe fn distance_pair_block8(
     use std::arch::x86_64::*;
 
     let base = vectors.add(block_off_i16);
-    let mut acc_lo = _mm256_setzero_si256();
-    let mut acc_hi = _mm256_setzero_si256();
+    let mut acc = _mm256_setzero_si256();
     for p in 0..IVF_PAIRS {
         let packed = _mm256_loadu_si256(base.add(p * LANES * 2) as *const __m256i);
         let diff = _mm256_sub_epi16(q_pairs[p], packed);
-        let sq_pairs = _mm256_madd_epi16(diff, diff);
-        let sq_lo = _mm256_castsi256_si128(sq_pairs);
-        let sq_hi = _mm256_extracti128_si256(sq_pairs, 1);
-        acc_lo = _mm256_add_epi64(acc_lo, _mm256_cvtepi32_epi64(sq_lo));
-        acc_hi = _mm256_add_epi64(acc_hi, _mm256_cvtepi32_epi64(sq_hi));
+        acc = _mm256_add_epi32(acc, _mm256_madd_epi16(diff, diff));
     }
 
-    let mut out = [0i64; LANES];
-    _mm256_storeu_si256(out.as_mut_ptr() as *mut __m256i, acc_lo);
-    _mm256_storeu_si256(out.as_mut_ptr().add(4) as *mut __m256i, acc_hi);
-    out
+    let mut vals = [0i32; LANES];
+    _mm256_storeu_si256(vals.as_mut_ptr() as *mut __m256i, acc);
+    [
+        vals[0] as i64,
+        vals[1] as i64,
+        vals[2] as i64,
+        vals[3] as i64,
+        vals[4] as i64,
+        vals[5] as i64,
+        vals[6] as i64,
+        vals[7] as i64,
+    ]
 }
 
 fn fraud_count_ivf_index_scalar(idx: &IndexReader, query: &[i16; STORE_DIM]) -> u8 {

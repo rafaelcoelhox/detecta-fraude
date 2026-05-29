@@ -21,8 +21,14 @@ RUN touch src/lib.rs src/bin/*.rs && \
     cargo build --release --bin fraud-api && \
     cargo build --release --features builder --bin index-builder
 
+# Tamanho de folha da KD-tree. Folhas maiores reduzem o pointer-chasing de nós
+# (o custo dominante do tail a frio no Haswell: cada nó é um DRAM miss dependente,
+# não-prefetchável) trocando-o por varredura sequencial de blocos SoA (barata a
+# frio, escondida pelo prefetcher de HW). 256 é o joelho do trade-off. Exato para
+# qualquer valor — só muda o formato da árvore, não o resultado do kNN.
+ARG KD_LEAF_SIZE=256
 COPY resources/references.json.gz /tmp/references.json.gz
-RUN /src/target/release/index-builder /tmp/references.json.gz /tmp/index.bin && \
+RUN KD_LEAF_SIZE=${KD_LEAF_SIZE} /src/target/release/index-builder /tmp/references.json.gz /tmp/index.bin && \
     rm /tmp/references.json.gz
 
 

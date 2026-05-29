@@ -13,6 +13,11 @@ fn clamp01(v: f64) -> f64 {
     }
 }
 
+#[inline(always)]
+fn quantize_clamped(v: f64) -> i16 {
+    quantize(clamp01(v))
+}
+
 pub fn vectorize_f64(p: &RawPayload<'_>) -> [f64; DIM] {
     let mut v = [0.0f64; DIM];
 
@@ -54,11 +59,40 @@ pub fn vectorize_f64(p: &RawPayload<'_>) -> [f64; DIM] {
 }
 
 pub fn vectorize_q(p: &RawPayload<'_>) -> [i16; STORE_DIM] {
-    let f = vectorize_f64(p);
     let mut q = [0i16; STORE_DIM];
-    for i in 0..DIM {
-        q[i] = quantize(f[i]);
+    q[0] = quantize_clamped(p.amount / MAX_AMOUNT);
+    q[1] = quantize_clamped(p.installments as f64 / MAX_INSTALLMENTS);
+
+    let ratio = if p.customer_avg_amount > 0.0 {
+        p.amount / p.customer_avg_amount
+    } else {
+        f64::INFINITY
+    };
+    q[2] = quantize_clamped(ratio / AMOUNT_VS_AVG_RATIO);
+
+    q[3] = quantize(p.requested_at.hour as f64 / 23.0);
+    q[4] = quantize(p.requested_at.weekday as f64 / 6.0);
+
+    if p.has_last_tx {
+        let minutes = (p.requested_at.epoch_minutes - p.last_tx_stamp.epoch_minutes) as f64;
+        q[5] = quantize_clamped(minutes / MAX_MINUTES);
+        q[6] = quantize_clamped(p.last_tx_km / MAX_KM);
+    } else {
+        q[5] = -(crate::SCALE as i16);
+        q[6] = -(crate::SCALE as i16);
     }
+
+    q[7] = quantize_clamped(p.km_from_home / MAX_KM);
+    q[8] = quantize_clamped(p.tx_count_24h as f64 / MAX_TX_COUNT_24H);
+    q[9] = if p.is_online { crate::SCALE as i16 } else { 0 };
+    q[10] = if p.card_present { crate::SCALE as i16 } else { 0 };
+    q[11] = if merchant_in_known(p.known_merchants_buf, p.merchant_id) {
+        0
+    } else {
+        crate::SCALE as i16
+    };
+    q[12] = quantize(mcc_risk_lookup(p.merchant_mcc));
+    q[13] = quantize_clamped(p.merchant_avg_amount / MAX_MERCHANT_AVG_AMOUNT);
     q
 }
 

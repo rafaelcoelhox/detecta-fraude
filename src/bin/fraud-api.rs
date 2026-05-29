@@ -83,6 +83,21 @@ fn warm_up_index(index: &IndexReader) {
     std::hint::black_box(sum);
 }
 
+// Prioridade de scheduling do worker. Sob contenção com o k6 co-localizado na
+// MacMini (2 cores), uma nice negativa faz a API preemptar o k6 imediatamente ao
+// acordar — comprime o tail p95→p99 (espera por slot de CPU). Requer CAP_SYS_NICE
+// no container; sem ela, o setpriority falha em silêncio e fica em nice 0.
+fn set_worker_nice() {
+    let nice: i32 = match env::var("WORKER_NICE").ok().and_then(|v| v.parse().ok()) {
+        Some(n) => n,
+        None => return,
+    };
+    unsafe {
+        let tid = libc::syscall(libc::SYS_gettid) as libc::id_t;
+        libc::setpriority(libc::PRIO_PROCESS, tid, nice);
+    }
+}
+
 fn run_worker(
     w: usize,
     socket: String,
@@ -90,6 +105,7 @@ fn run_worker(
     index: &'static IndexReader,
     responses: &'static Responses,
 ) {
+    set_worker_nice();
     let listener = match create_listener(&PathBuf::from(&socket)) {
         Ok(fd) => fd,
         Err(e) => {
