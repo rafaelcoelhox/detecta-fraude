@@ -31,7 +31,8 @@ services:
           memory: "20MB"
 
   api1:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:leaf256-20260528
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:leaf320-20260530-a965ff9
+    #image: ghcr.io/rafaelcoelhox/detecta-fraude-api:leaf256-20260528
     container_name: detecta-api1
     platform: linux/amd64
     cpuset: "0"
@@ -64,7 +65,8 @@ services:
           memory: "165MB"
 
   api2:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:leaf256-20260528
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:leaf320-20260530-a965ff9
+    # image: ghcr.io/rafaelcoelhox/detecta-fraude-api:leaf256-20260528
     container_name: detecta-api2
     platform: linux/amd64
     cpuset: "1"
