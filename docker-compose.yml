@@ -31,7 +31,6 @@ services:
           memory: "20MB"
 
   api1:
-    #image: ghcr.io/rafaelcoelhox/detecta-fraude-api:leaf300-20260530-7087485
     image: ghcr.io/rafaelcoelhox/detecta-fraude-api:leaf256-20260528
     container_name: detecta-api1
     platform: linux/amd64
@@ -65,7 +64,6 @@ services:
           memory: "165MB"
 
   api2:
-    #image: ghcr.io/rafaelcoelhox/detecta-fraude-api:leaf300-20260530-7087485
     image: ghcr.io/rafaelcoelhox/detecta-fraude-api:leaf256-20260528
     container_name: detecta-api2
     platform: linux/amd64
@@ -92,3 +90,19 @@ services:
         soft: -1
         hard: -1
     deploy:
+      resources:
+        limits:
+          cpus: "0.45"
+          memory: "165MB"
+
+networks:
+  rinha:
+    driver: bridge
+
+volumes:
+  sockets:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=4m,uid=0,gid=0,mode=0777"
