@@ -3,7 +3,7 @@ services:
     image: ghcr.io/rafaelcoelhox/detecta-fraude-lb:fd-p99-202605281043
     container_name: detecta-lb
     platform: linux/amd64
-    cpuset: "2"
+    cpuset: "3"
     ports:
       - "9999:9999"
     networks:
