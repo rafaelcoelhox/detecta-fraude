@@ -3,7 +3,7 @@ services:
     image: ghcr.io/rafaelcoelhox/detecta-fraude-lb:fd-p99-202605281043
     container_name: detecta-lb
     platform: linux/amd64
-    cpuset: "2,3"
+    cpuset: "3"
     ports:
       - "9999:9999"
     networks:
@@ -31,8 +31,7 @@ services:
           memory: "20MB"
 
   api1:
-    #image: ghcr.io/rafaelcoelhox/detecta-fraude-api:leaf300-20260530-7087485
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:leaf256-20260528
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:master-20260529-884bebb
     container_name: detecta-api1
     platform: linux/amd64
     cpuset: "0"
@@ -65,8 +64,7 @@ services:
           memory: "165MB"
 
   api2:
-    #image: ghcr.io/rafaelcoelhox/detecta-fraude-api:leaf300-20260530-7087485
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:leaf256-20260528
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:master-20260529-884bebb
     container_name: detecta-api2
     platform: linux/amd64
     cpuset: "1"
