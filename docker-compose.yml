@@ -47,7 +47,7 @@ services:
       INDEX_MLOCK: "1"
       INDEX_PATH: "/index/index.bin"
       EPOLL_SPIN_US: "30"
-      EPOLL_IDLE_US: "250"
+      EPOLL_IDLE_US: "150"
     logging:
       driver: none
     ulimits:
@@ -79,7 +79,7 @@ services:
       INDEX_MLOCK: "1"
       INDEX_PATH: "/index/index.bin"
       EPOLL_SPIN_US: "30"
-      EPOLL_IDLE_US: "250"
+      EPOLL_IDLE_US: "150"
     logging:
       driver: none
     ulimits:
