@@ -21,7 +21,7 @@ RUN touch src/lib.rs src/bin/*.rs && \
     cargo build --release --bin fraud-api && \
     cargo build --release --features builder --bin index-builder
 
-ARG KD_LEAF_SIZE=300
+ARG KD_LEAF_SIZE=256
 COPY resources/references.json.gz /tmp/references.json.gz
 RUN KD_LEAF_SIZE=${KD_LEAF_SIZE} /src/target/release/index-builder /tmp/references.json.gz /tmp/index.bin && \
     rm /tmp/references.json.gz
