@@ -1592,6 +1592,16 @@ pub mod build {
             });
         }
 
+        // Relayout BFS dos nós: filhos de cada nó ficam em índices consecutivos
+        // (leitura contígua dos 2 bboxes -> elimina o cache miss do filho distante
+        // que domina o tail de travessia no Haswell). Só reordena/renumera nós;
+        // a árvore e os resultados são idênticos (kNN exato). Desliga com KD_BFS_LAYOUT=0.
+        let nodes = if std::env::var_os("KD_BFS_LAYOUT").map(|v| v == "0").unwrap_or(false) {
+            nodes
+        } else {
+            relayout_bfs(&nodes, &mut roots)
+        };
+
         assert_eq!(blocks.len() % LANES, 0);
         let block_count = blocks.len() / LANES;
         let partitions_off = HEADER_SIZE;
@@ -1926,6 +1936,55 @@ pub mod build {
         node.start = left_start;
         node.len = total_len;
         node_idx
+    }
+
+    /// Reordena os nós em BFS a partir de cada raiz de partição. Como `left` e
+    /// `right` são enfileirados juntos, recebem índices novos consecutivos —
+    /// então ler os dois bboxes dos filhos vira uma leitura contígua (sem o
+    /// cache miss do filho distante do layout pré-ordem). Topo da árvore fica
+    /// denso/quente. Remapeia left/right de cada nó e as raízes das partições.
+    /// Resultado da busca é idêntico (apenas renumeração).
+    fn relayout_bfs(nodes: &[BuildNode], roots: &mut [PartitionRoot]) -> Vec<BuildNode> {
+        use std::collections::VecDeque;
+        let mut old_to_new = vec![-1i32; nodes.len()];
+        let mut order: Vec<i32> = Vec::with_capacity(nodes.len());
+        let mut q: VecDeque<i32> = VecDeque::new();
+
+        let enqueue = |old: i32, old_to_new: &mut [i32], order: &mut Vec<i32>, q: &mut VecDeque<i32>| {
+            if old >= 0 && old_to_new[old as usize] < 0 {
+                old_to_new[old as usize] = order.len() as i32;
+                order.push(old);
+                q.push_back(old);
+            }
+        };
+
+        for r in roots.iter() {
+            enqueue(r.root, &mut old_to_new, &mut order, &mut q);
+        }
+        while let Some(old) = q.pop_front() {
+            let n = nodes[old as usize];
+            if n.left >= 0 {
+                // left e right consecutivos: ficam adjacentes no array novo
+                enqueue(n.left, &mut old_to_new, &mut order, &mut q);
+                enqueue(n.right, &mut old_to_new, &mut order, &mut q);
+            }
+        }
+
+        let mut new_nodes: Vec<BuildNode> = Vec::with_capacity(order.len());
+        for &old in &order {
+            let mut node = nodes[old as usize];
+            if node.left >= 0 {
+                node.left = old_to_new[node.left as usize];
+                node.right = old_to_new[node.right as usize];
+            }
+            new_nodes.push(node);
+        }
+        for r in roots.iter_mut() {
+            if r.root >= 0 {
+                r.root = old_to_new[r.root as usize];
+            }
+        }
+        new_nodes
     }
 }
 

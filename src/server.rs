@@ -160,15 +160,23 @@ impl Server {
         let idle_us = epoll_idle_us();
         let idle_timeout = epoll_timeout_ms();
         loop {
-            let mut n = unsafe { epoll_wait(self.epfd, events.as_mut_ptr(), MAX_EVENTS as i32, 0) };
-            if n == 0 && !spin.is_zero() {
-                let start = std::time::Instant::now();
-                while start.elapsed() < spin {
-                    n = unsafe { epoll_wait(self.epfd, events.as_mut_ptr(), MAX_EVENTS as i32, 0) };
-                    if n != 0 {
-                        break;
+            // Com spin (>0): poll não-bloqueante + spin de userspace antes de dormir.
+            // Sem spin (EPOLL_SPIN_US=0): pula o epoll_wait(0) redundante e vai direto
+            // ao epoll_pwait2 — que já retorna na hora se houver evento. Isso corta de
+            // 2 para 1 syscall por ciclo ocioso, devolvendo CPU ao k6 co-localizado (que
+            // mede a latência). Medido: spin=0 derruba o p99 sob contenção de 2 cores.
+            let mut n = 0i32;
+            if !spin.is_zero() {
+                n = unsafe { epoll_wait(self.epfd, events.as_mut_ptr(), MAX_EVENTS as i32, 0) };
+                if n == 0 {
+                    let start = std::time::Instant::now();
+                    while start.elapsed() < spin {
+                        n = unsafe { epoll_wait(self.epfd, events.as_mut_ptr(), MAX_EVENTS as i32, 0) };
+                        if n != 0 {
+                            break;
+                        }
+                        std::hint::spin_loop();
                     }
-                    std::hint::spin_loop();
                 }
             }
             if n == 0 {
