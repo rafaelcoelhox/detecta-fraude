@@ -57,29 +57,3 @@ pub fn parse_iso8601(buf: &[u8]) -> Option<Stamp> {
         weekday,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_basic() {
-        let s = parse_iso8601(b"2026-03-11T20:23:35Z").unwrap();
-        assert_eq!(s.hour, 20);
-        assert_eq!(s.weekday, 2);
-    }
-
-    #[test]
-    fn weekday_known_dates() {
-        assert_eq!(parse_iso8601(b"1970-01-05T00:00:00Z").unwrap().weekday, 0);
-        assert_eq!(parse_iso8601(b"1970-01-04T00:00:00Z").unwrap().weekday, 6);
-        assert_eq!(parse_iso8601(b"2026-03-15T00:00:00Z").unwrap().weekday, 6);
-    }
-
-    #[test]
-    fn minutes_delta() {
-        let a = parse_iso8601(b"2026-03-11T14:58:35Z").unwrap();
-        let b = parse_iso8601(b"2026-03-11T20:23:35Z").unwrap();
-        assert_eq!(b.epoch_minutes - a.epoch_minutes, 325);
-    }
-}

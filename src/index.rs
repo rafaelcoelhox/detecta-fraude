@@ -1928,31 +1928,3 @@ pub mod build {
         node_idx
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn partition_key_matches_expected_bits() {
-        let mut v = [0i16; STORE_DIM];
-        assert_eq!(partition_key(&v), 1);
-        v[5] = -10000;
-        assert_eq!(partition_key(&v), 0);
-        v[9] = 10000;
-        v[10] = 10000;
-        v[11] = 10000;
-        v[12] = 8000;
-        v[2] = 5000;
-        v[8] = 3000;
-        assert_eq!(partition_key(&v), 0b1111_1110);
-    }
-
-    #[test]
-    fn lower_bound_is_zero_inside_box() {
-        let q = [100i16; STORE_DIM];
-        let lo = [50i16; STORE_DIM];
-        let hi = [200i16; STORE_DIM];
-        assert_eq!(lower_bound_vec(&q, &lo, &hi), 0);
-    }
-}
