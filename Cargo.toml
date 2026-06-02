@@ -16,6 +16,11 @@ path = "src/bin/fraud-api.rs"
 name = "index-builder"
 path = "src/bin/index-builder.rs"
 
+[[bin]]
+name = "replay"
+path = "src/bin/replay.rs"
+required-features = ["knn_stats"]
+
 [dependencies]
 libc = "0.2"
 memmap2 = "0.9"

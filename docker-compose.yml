@@ -13,7 +13,7 @@ services:
     environment:
       LB_PORT: "9999"
       LB_BACKLOG: "65535"
-      LB_ACCEPT_BATCH: "64"
+      LB_ACCEPT_BATCH: "128"
       API_SOCKETS: "/sockets/api1-w0.sock,/sockets/api2-w0.sock"
     depends_on:
       api1:
@@ -27,7 +27,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.20"
+          cpus: "0.30"
           memory: "20MB"
 
   api1:
@@ -63,7 +63,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.40"
+          cpus: "0.35"
           memory: "165MB"
 
   api2:
@@ -98,7 +98,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.40"
+          cpus: "0.35"
           memory: "165MB"
 
 networks:
