@@ -13,7 +13,7 @@ services:
     environment:
       LB_PORT: "9999"
       LB_BACKLOG: "65535"
-      LB_ACCEPT_BATCH: "64"
+      LB_ACCEPT_BATCH: "128"
       API_SOCKETS: "/sockets/api1-w0.sock,/sockets/api2-w0.sock"
     depends_on:
       api1:
@@ -27,7 +27,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.20"
+          cpus: "0.30"
           memory: "20MB"
 
   api1:
@@ -48,9 +48,9 @@ services:
       INDEX_PATH: "/index/index.bin"
       EPOLL_SPIN_US: "0"
       EPOLL_IDLE_US: "60"
-      EPOLL_BUSY_POLL_US: "0"
+      EPOLL_BUSY_POLL_US: "100"
       EPOLL_BUSY_POLL_BUDGET: "8"
-      EPOLL_PREFER_BUSY_POLL: "0"
+      EPOLL_PREFER_BUSY_POLL: "1"
     logging:
       driver: none
     ulimits:
@@ -63,7 +63,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.40"
+          cpus: "0.35"
           memory: "165MB"
 
   api2:
@@ -83,9 +83,9 @@ services:
       INDEX_PATH: "/index/index.bin"
       EPOLL_SPIN_US: "0"
       EPOLL_IDLE_US: "60"
-      EPOLL_BUSY_POLL_US: "0"
+      EPOLL_BUSY_POLL_US: "100"
       EPOLL_BUSY_POLL_BUDGET: "8"
-      EPOLL_PREFER_BUSY_POLL: "0"
+      EPOLL_PREFER_BUSY_POLL: "1"
     logging:
       driver: none
     ulimits:
@@ -98,7 +98,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.40"
+          cpus: "0.35"
           memory: "165MB"
 
 networks:
