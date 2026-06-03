@@ -19,7 +19,7 @@ pub struct Responses {
 
 impl Responses {
     pub fn new() -> Self {
-        const SCORES: [&str; 6] = ["0.0", "0.2", "0.4", "0.6", "0.8", "1.0"];
+        const SCORES: [&str; 6] = ["0", "0.2", "0.4", "0.6", "0.8", "1"];
         let mut by_count: [Vec<u8>; 6] = Default::default();
         for i in 0..6 {
             let approved = i < 3;

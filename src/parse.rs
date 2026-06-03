@@ -73,32 +73,73 @@ fn read_string<'a>(buf: &'a [u8], i: usize) -> Result<(&'a [u8], usize), ParseEr
 
 #[inline]
 fn read_number_f64(buf: &[u8], i: usize) -> Result<(f64, usize), ParseError> {
-    let i = skip_ws(buf, i);
-    let start = i;
-    let mut j = i;
-    if j < buf.len() && (buf[j] == b'-' || buf[j] == b'+') {
-        j += 1;
-    }
-    while j < buf.len() {
-        let c = buf[j];
-        if (b'0'..=b'9').contains(&c)
-            || c == b'.'
-            || c == b'e'
-            || c == b'E'
-            || c == b'-'
-            || c == b'+'
-        {
-            j += 1;
-        } else {
-            break;
-        }
-    }
-    if j == start {
+    let mut i = skip_ws(buf, i);
+    if i >= buf.len() {
         return Err(ParseError);
     }
-    let s = std::str::from_utf8(&buf[start..j]).map_err(|_| ParseError)?;
-    let v: f64 = s.parse().map_err(|_| ParseError)?;
-    Ok((v, j))
+
+    let mut neg = false;
+    if buf[i] == b'-' {
+        neg = true;
+        i += 1;
+    } else if buf[i] == b'+' {
+        i += 1;
+    }
+
+    let mut saw_digit = false;
+    let mut value = 0.0f64;
+    while i < buf.len() && buf[i].is_ascii_digit() {
+        value = value * 10.0 + f64::from(buf[i] - b'0');
+        i += 1;
+        saw_digit = true;
+    }
+
+    if i < buf.len() && buf[i] == b'.' {
+        i += 1;
+        let mut scale = 0.1f64;
+        while i < buf.len() && buf[i].is_ascii_digit() {
+            value += f64::from(buf[i] - b'0') * scale;
+            scale *= 0.1;
+            i += 1;
+            saw_digit = true;
+        }
+    }
+
+    if !saw_digit {
+        return Err(ParseError);
+    }
+
+    if i < buf.len() && (buf[i] == b'e' || buf[i] == b'E') {
+        i += 1;
+        let mut exp_neg = false;
+        if i < buf.len() && buf[i] == b'-' {
+            exp_neg = true;
+            i += 1;
+        } else if i < buf.len() && buf[i] == b'+' {
+            i += 1;
+        }
+        let mut saw_exp = false;
+        let mut exp = 0i32;
+        while i < buf.len() && buf[i].is_ascii_digit() {
+            exp = exp
+                .saturating_mul(10)
+                .saturating_add(i32::from(buf[i] - b'0'));
+            i += 1;
+            saw_exp = true;
+        }
+        if !saw_exp {
+            return Err(ParseError);
+        }
+        if exp_neg {
+            exp = -exp;
+        }
+        value *= 10f64.powi(exp);
+    }
+
+    if neg {
+        value = -value;
+    }
+    Ok((value, i))
 }
 
 #[inline]
@@ -112,8 +153,10 @@ fn read_number_u32(buf: &[u8], i: usize) -> Result<(u32, usize), ParseError> {
     if j == start {
         return Err(ParseError);
     }
-    let s = std::str::from_utf8(&buf[start..j]).map_err(|_| ParseError)?;
-    let v: u32 = s.parse().map_err(|_| ParseError)?;
+    let mut v = 0u32;
+    for &b in &buf[start..j] {
+        v = v.saturating_mul(10).saturating_add(u32::from(b - b'0'));
+    }
     Ok((v, j))
 }
 
