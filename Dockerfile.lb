@@ -3,7 +3,7 @@ WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY native/fd-lb.c .
-RUN gcc -O3 -Wall -Wextra -static -o fd-lb fd-lb.c && strip fd-lb
+RUN gcc -O3 -march=haswell -Wall -Wextra -static -flto -fno-stack-protector -DNDEBUG -s -o fd-lb fd-lb.c
 
 FROM scratch
 COPY --from=builder /src/fd-lb /fd-lb

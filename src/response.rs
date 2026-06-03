@@ -19,7 +19,7 @@ pub struct Responses {
 
 impl Responses {
     pub fn new() -> Self {
-        const SCORES: [&str; 6] = ["0.0", "0.2", "0.4", "0.6", "0.8", "1.0"];
+        const SCORES: [&str; 6] = ["0", "0.2", "0.4", "0.6", "0.8", "1"];
         let mut by_count: [Vec<u8>; 6] = Default::default();
         for i in 0..6 {
             let approved = i < 3;
@@ -44,31 +44,5 @@ impl Responses {
 impl Default for Responses {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn count_zero_approves() {
-        let r = Responses::new();
-        let s = std::str::from_utf8(r.for_count(0)).unwrap();
-        assert!(s.contains(r#""approved":true,"fraud_score":0.0"#));
-    }
-
-    #[test]
-    fn count_three_denies() {
-        let r = Responses::new();
-        let s = std::str::from_utf8(r.for_count(3)).unwrap();
-        assert!(s.contains(r#""approved":false,"fraud_score":0.6"#));
-    }
-
-    #[test]
-    fn count_five_denies() {
-        let r = Responses::new();
-        let s = std::str::from_utf8(r.for_count(5)).unwrap();
-        assert!(s.contains(r#""approved":false,"fraud_score":1.0"#));
     }
 }

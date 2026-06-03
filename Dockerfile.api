@@ -9,7 +9,6 @@ COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src/bin && \
     echo "fn main(){}" > src/bin/fraud-api.rs && \
     echo "fn main(){}" > src/bin/index-builder.rs && \
-    echo "fn main(){}" > src/bin/eval-preview.rs && \
     echo "" > src/lib.rs && \
     cargo build --release --bin fraud-api && \
     cargo build --release --features builder --bin index-builder && \

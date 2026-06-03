@@ -466,8 +466,11 @@ fn find_content_length(headers: &[u8]) -> Option<usize> {
         if j == start {
             return None;
         }
-        let s = std::str::from_utf8(&headers[start..j]).ok()?;
-        return s.parse().ok();
+        let mut n = 0usize;
+        for &b in &headers[start..j] {
+            n = n.checked_mul(10)?.checked_add(usize::from(b - b'0'))?;
+        }
+        return Some(n);
     }
     None
 }
