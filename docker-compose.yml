@@ -24,7 +24,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.20"
+          cpus: "0.01"
           memory: "20MB"
 
   api1:
@@ -51,7 +51,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.40"
+          cpus: "0.001"
           memory: "165MB"
 
   api2:
@@ -78,7 +78,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.40"
+          cpus: "0.001"
           memory: "165MB"
 
 volumes:
@@ -87,4 +87,4 @@ volumes:
     driver_opts:
       type: tmpfs
       device: tmpfs
-      o: "size=4m,uid=0,gid=0,mode=0777"
+      o: "size=1m,uid=0,gid=0,mode=0777"
