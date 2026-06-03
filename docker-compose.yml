@@ -1,6 +1,6 @@
 services:
   lb:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-lb:p99-nowarmup-202606022220-4dc1cfa
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-lb:p99-parity-202606022325-cfc2833
     platform: linux/amd64
     cpuset: "2,3"
     logging:
@@ -28,7 +28,7 @@ services:
           memory: "20MB"
 
   api1:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:p99-nowarmup-202606022220-4dc1cfa
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:p99-parity-202606022325-cfc2833
     platform: linux/amd64
     cpuset: "0"
     logging:
@@ -55,7 +55,7 @@ services:
           memory: "165MB"
 
   api2:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:p99-nowarmup-202606022220-4dc1cfa
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:p99-parity-202606022325-cfc2833
     platform: linux/amd64
     cpuset: "1"
     logging:
