@@ -1,6 +1,6 @@
 services:
   lb:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-lb:fd-p99-202605281043
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-lb:p99-nowarmup-202606022220-4dc1cfa
     container_name: detecta-lb
     platform: linux/amd64
     cpuset: "2,3"
@@ -31,7 +31,7 @@ services:
           memory: "20MB"
 
   api1:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:master-20260529-884bebb
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:p99-nowarmup-202606022220-4dc1cfa
     container_name: detecta-api1
     platform: linux/amd64
     cpuset: "0"
@@ -43,7 +43,6 @@ services:
       API_SOCKET_PREFIX: "/sockets/api1"
       API_WORKERS: "1"
       CONN_POOL_CAP: "512"
-      API_WARMUP_QUERIES: "4096"
       INDEX_MLOCK: "1"
       INDEX_PATH: "/index/index.bin"
       EPOLL_SPIN_US: "0"
@@ -67,7 +66,7 @@ services:
           memory: "165MB"
 
   api2:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:master-20260529-884bebb
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:p99-nowarmup-202606022220-4dc1cfa
     container_name: detecta-api2
     platform: linux/amd64
     cpuset: "1"
@@ -78,7 +77,6 @@ services:
       API_SOCKET_PREFIX: "/sockets/api2"
       API_WORKERS: "1"
       CONN_POOL_CAP: "512"
-      API_WARMUP_QUERIES: "4096"
       INDEX_MLOCK: "1"
       INDEX_PATH: "/index/index.bin"
       EPOLL_SPIN_US: "0"

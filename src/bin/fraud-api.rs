@@ -1,4 +1,3 @@
-
 use detecta_fraude::index::IndexReader;
 use detecta_fraude::response::Responses;
 use detecta_fraude::server::{accept_lb, create_listener, Server};
@@ -52,7 +51,11 @@ fn warm_up_index(index: &IndexReader) {
     let count = env::var("API_WARMUP_QUERIES")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(2048);
+        .unwrap_or(0);
+    if count == 0 {
+        return;
+    }
+
     let mut sum = 0u8;
     for i in 0..count {
         let mut q = [0i16; STORE_DIM];
