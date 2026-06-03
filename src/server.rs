@@ -160,11 +160,6 @@ impl Server {
         let idle_us = epoll_idle_us();
         let idle_timeout = epoll_timeout_ms();
         loop {
-            // Com spin (>0): poll não-bloqueante + spin de userspace antes de dormir.
-            // Sem spin (EPOLL_SPIN_US=0): pula o epoll_wait(0) redundante e vai direto
-            // ao epoll_pwait2 — que já retorna na hora se houver evento. Isso corta de
-            // 2 para 1 syscall por ciclo ocioso, devolvendo CPU ao k6 co-localizado (que
-            // mede a latência). Medido: spin=0 derruba o p99 sob contenção de 2 cores.
             let mut n = 0i32;
             if !spin.is_zero() {
                 n = unsafe { epoll_wait(self.epfd, events.as_mut_ptr(), MAX_EVENTS as i32, 0) };
@@ -214,10 +209,6 @@ impl Server {
                         unsafe { libc::close(fd) };
                         continue;
                     }
-                    // O FD chega via SCM_RIGHTS já não-bloqueante (o LB faz accept4 com
-                    // SOCK_NONBLOCK) e com TCP_NODELAY ativo — ambos vivem na open file
-                    // description / struct sock compartilhados, então viajam com o FD.
-                    // Só refazemos TCP_QUICKACK, que é one-shot e o kernel reseta sozinho.
                     set_quickack(fd);
                     if self.register(fd).is_err() {
                         unsafe { libc::close(fd) };
