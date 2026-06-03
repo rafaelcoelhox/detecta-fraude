@@ -196,10 +196,28 @@ impl IndexReader {
     pub fn open(path: &Path) -> std::io::Result<Self> {
         let file = std::fs::File::open(path)?;
         let map = unsafe { memmap2::MmapOptions::new().populate().map(&file)? };
-        let base = map.as_ptr();
         let len = map.len();
         if len < HEADER_SIZE {
             return Err(invalid("index too small"));
+        }
+
+        // Backing do índice: por padrão o próprio file mmap (= comportamento
+        // histórico). Com INDEX_HUGE=1, copia para memória anônima em huge
+        // pages de 2 MiB — o mmap de arquivo read-only NÃO recebe THP via
+        // madvise (medido: 0% em arquivo vs ~97% em anônimo). Leva o índice de
+        // ~22k páginas de 4 KB para ~43 de 2 MiB -> TLB-resident.
+        #[allow(unused_mut)]
+        let mut base = map.as_ptr();
+        #[cfg(target_os = "linux")]
+        if huge_enabled() {
+            if let Some(p) = unsafe { map_hugepage_copy(map.as_ptr(), len) } {
+                base = p as *const u8;
+                const MADV_DONTNEED: libc::c_int = 4;
+                // Libera o RSS do file map. Sem isto, file (87 MiB populado) +
+                // anônimo (87 MiB mlocked) ~= 174 MiB residentes estouram o
+                // limite de 165 MB do container -> OOM no startup.
+                unsafe { libc::madvise(map.as_ptr() as *mut _, len, MADV_DONTNEED) };
+            }
         }
 
         let header: Header = unsafe { std::ptr::read_unaligned(base as *const Header) };
@@ -297,6 +315,7 @@ impl IndexReader {
         idx.advise();
         idx.prefetch();
         idx.lock_if_requested();
+        idx.report_hugepages();
         Ok(idx)
     }
 
@@ -481,10 +500,77 @@ impl IndexReader {
 
     #[cfg(not(target_os = "linux"))]
     fn lock_if_requested(&self) {}
+
+    /// Loga quanto do índice ficou em huge pages de 2 MiB (lendo a própria
+    /// VMA em /proc/self/smaps). Torna o resultado observável na sim e no
+    /// alvo (se o stderr aparecer) sem precisar monitorar a máquina.
+    #[cfg(target_os = "linux")]
+    fn report_hugepages(&self) {
+        let want = self.base as usize;
+        let Ok(s) = std::fs::read_to_string("/proc/self/smaps") else {
+            return;
+        };
+        let mut hit = false;
+        for line in s.lines() {
+            if let Some((h, _)) = line.split_once('-') {
+                if let Ok(a) = usize::from_str_radix(h, 16) {
+                    hit = a == want;
+                    continue;
+                }
+            }
+            if hit {
+                if let Some(v) = line.strip_prefix("AnonHugePages:") {
+                    let kb: u64 = v.trim().trim_end_matches(" kB").trim().parse().unwrap_or(0);
+                    eprintln!(
+                        "[index] huge pages: {}/{} MiB ({:.0}%)",
+                        kb / 1024,
+                        self.len >> 20,
+                        100.0 * ((kb << 10) as f64) / self.len as f64
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn report_hugepages(&self) {}
 }
 
 fn invalid(msg: &'static str) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, msg)
+}
+
+#[cfg(target_os = "linux")]
+fn huge_enabled() -> bool {
+    // Default OFF: mantém o file mmap histórico. =1 ativa a cópia anônima em
+    // huge pages (braço de tratamento do A/B; flip por env, sem rebuild).
+    std::env::var("INDEX_HUGE").map(|v| v != "0").unwrap_or(false)
+}
+
+/// Copia o índice para memória anônima com THP de 2 MiB. Devolve o ponteiro
+/// (já read-only + mlocked) ou None -> o chamador cai no file mmap.
+#[cfg(target_os = "linux")]
+unsafe fn map_hugepage_copy(src: *const u8, len: usize) -> Option<*mut u8> {
+    const MADV_HUGEPAGE: libc::c_int = 14;
+    let p = libc::mmap(
+        std::ptr::null_mut(),
+        len,
+        libc::PROT_READ | libc::PROT_WRITE,
+        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+        -1,
+        0,
+    );
+    if p == libc::MAP_FAILED {
+        return None;
+    }
+    let p = p as *mut u8;
+    // HUGEPAGE antes de faltar as páginas: o fault já materializa em 2 MiB.
+    libc::madvise(p as *mut _, len, MADV_HUGEPAGE);
+    std::ptr::copy_nonoverlapping(src, p, len); // escreve => falta como THP
+    libc::mprotect(p as *mut _, len, libc::PROT_READ); // índice é imutável
+    libc::mlock(p as *const _, len); // fixa (impede split/reclaim)
+    Some(p)
 }
 
 #[inline]
@@ -1947,12 +2033,6 @@ pub mod build {
         node_idx
     }
 
-    /// Reordena os nós em BFS a partir de cada raiz de partição. Como `left` e
-    /// `right` são enfileirados juntos, recebem índices novos consecutivos —
-    /// então ler os dois bboxes dos filhos vira uma leitura contígua (sem o
-    /// cache miss do filho distante do layout pré-ordem). Topo da árvore fica
-    /// denso/quente. Remapeia left/right de cada nó e as raízes das partições.
-    /// Resultado da busca é idêntico (apenas renumeração).
     fn relayout_bfs(nodes: &[BuildNode], roots: &mut [PartitionRoot]) -> Vec<BuildNode> {
         use std::collections::VecDeque;
         let mut old_to_new = vec![-1i32; nodes.len()];
