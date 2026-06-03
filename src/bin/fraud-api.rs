@@ -66,12 +66,6 @@ fn apply_jitter(v: i16, state: &mut u64, span: u64, jitter: i16, smax: i16) -> i
     (v as i64 + j).clamp(-(smax as i64), smax as i64) as i16
 }
 
-// Aquece com pontos reais do índice (mesma distribuição que o teste consulta),
-// não com vetores sintéticos. Cada ponto recebe jitter nas dimensões contínuas
-// para a query cair perto de um ponto sem coincidir — assim a maioria das
-// queries percorre a busca completa (caminho caro que domina a cauda) em vez de
-// disparar early_hit, reproduzindo a mistura de caminhos do tráfego real.
-// API_WARMUP_JITTER controla a amplitude (em unidades quantizadas; SCALE=10000).
 fn warm_up_index(index: &IndexReader) {
     let count = env_usize("API_WARMUP_QUERIES", 2048);
     let jitter = env_usize("API_WARMUP_JITTER", 120) as i16;
@@ -80,9 +74,6 @@ fn warm_up_index(index: &IndexReader) {
         return;
     }
     let smax: i16 = SCALE as i16;
-    // Dims contínuas; categóricas (9,10,11) ficam de fora p/ não gerar valores
-    // impossíveis. As temporais (5,6) só recebem jitter quando não são a
-    // sentinela -SCALE ("sem última transação").
     const CONT: [usize; 9] = [0, 1, 2, 3, 4, 7, 8, 12, 13];
     let span = (2 * jitter as i64 + 1) as u64;
     let mut state: u64 = 0x9E3779B97F4A7C15;

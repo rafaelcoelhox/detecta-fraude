@@ -342,11 +342,6 @@ impl IndexReader {
         unsafe { self.base.add(self.vectors_off) as *const i16 }
     }
 
-    /// Reconstrói o i-ésimo vetor quantizado do índice, desintercalando o layout
-    /// de blocks SIMD (LANES pontos por block; dims armazenadas em pares via
-    /// ivf_pair_offset, e só as DIM reais — o padding STORE_DIM fica zerado).
-    /// Usado pelo warmup para amostrar pontos reais (mesma distribuição que o
-    /// teste consulta) em vez de queries sintéticas.
     #[inline]
     pub fn point(&self, i: u32) -> [i16; STORE_DIM] {
         debug_assert!(i < self.header.n_points);
@@ -1610,10 +1605,6 @@ pub mod build {
             });
         }
 
-        // Relayout BFS dos nós: filhos de cada nó ficam em índices consecutivos
-        // (leitura contígua dos 2 bboxes -> elimina o cache miss do filho distante
-        // que domina o tail de travessia no Haswell). Só reordena/renumera nós;
-        // a árvore e os resultados são idênticos (kNN exato). Desliga com KD_BFS_LAYOUT=0.
         let nodes = if std::env::var_os("KD_BFS_LAYOUT").map(|v| v == "0").unwrap_or(false) {
             nodes
         } else {
@@ -1982,7 +1973,6 @@ pub mod build {
         while let Some(old) = q.pop_front() {
             let n = nodes[old as usize];
             if n.left >= 0 {
-                // left e right consecutivos: ficam adjacentes no array novo
                 enqueue(n.left, &mut old_to_new, &mut order, &mut q);
                 enqueue(n.right, &mut old_to_new, &mut order, &mut q);
             }
@@ -2033,8 +2023,6 @@ mod tests {
         assert_eq!(lower_bound_vec(&q, &lo, &hi), 0);
     }
 
-    // Valida point() contra um índice real. Só roda com INDEX_TEST_PATH setado
-    // (o índice não é commitado): INDEX_TEST_PATH=/tmp/index.bin cargo test point
     #[test]
     fn point_reconstruction_invariants() {
         let path = match std::env::var("INDEX_TEST_PATH") {
@@ -2045,14 +2033,12 @@ mod tests {
         let n = idx.n_points();
         assert!(n > 0);
         let smax = SCALE as i16;
-        // amostra espalhada incluindo as bordas (0 e n-1)
         let samples = [0u32, 1, 7, 8, n / 3, n / 2, n - 2, n - 1];
         for &i in &samples {
             if i >= n {
                 continue;
             }
             let q = idx.point(i);
-            // dims contínuas dentro do range quantizado
             for d in 0..DIM {
                 assert!(
                     q[d] >= -smax && q[d] <= smax,
@@ -2060,7 +2046,6 @@ mod tests {
                     q[d]
                 );
             }
-            // categóricas binárias: is_online/card_present/unknown_merchant ∈ {0, SCALE}
             for &d in &[9usize, 10, 11] {
                 assert!(
                     q[d] == 0 || q[d] == smax,
@@ -2068,7 +2053,6 @@ mod tests {
                     q[d]
                 );
             }
-            // padding STORE_DIM não armazenado: deve sair zerado
             for d in DIM..STORE_DIM {
                 assert_eq!(q[d], 0, "ponto {i} padding dim {d} não-zero");
             }
