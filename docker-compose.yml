@@ -31,7 +31,7 @@ services:
           memory: "20MB"
 
   api1:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:master-20260529-884bebb
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:melhora-p99-20260603-2b62fad
     container_name: detecta-api1
     platform: linux/amd64
     cpuset: "0"
@@ -44,6 +44,7 @@ services:
       API_WORKERS: "1"
       CONN_POOL_CAP: "512"
       API_WARMUP_QUERIES: "4096"
+      API_WARMUP_JITTER: "${API_WARMUP_JITTER:-512}"
       INDEX_MLOCK: "1"
       INDEX_PATH: "/index/index.bin"
       EPOLL_SPIN_US: "0"
@@ -67,7 +68,7 @@ services:
           memory: "165MB"
 
   api2:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:master-20260529-884bebb
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:melhora-p99-20260603-2b62fad
     container_name: detecta-api2
     platform: linux/amd64
     cpuset: "1"
@@ -79,6 +80,7 @@ services:
       API_WORKERS: "1"
       CONN_POOL_CAP: "512"
       API_WARMUP_QUERIES: "4096"
+      API_WARMUP_JITTER: "${API_WARMUP_JITTER:-512}"
       INDEX_MLOCK: "1"
       INDEX_PATH: "/index/index.bin"
       EPOLL_SPIN_US: "0"

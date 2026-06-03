@@ -2,7 +2,7 @@
 use detecta_fraude::index::IndexReader;
 use detecta_fraude::response::Responses;
 use detecta_fraude::server::{accept_lb, create_listener, Server};
-use detecta_fraude::{SCALE, STORE_DIM};
+use detecta_fraude::SCALE;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -48,30 +48,58 @@ fn main() {
     }
 }
 
+fn env_usize(name: &str, default: usize) -> usize {
+    env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+}
+
+#[inline]
+fn lcg(state: &mut u64) -> u64 {
+    *state = state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    *state
+}
+
+#[inline]
+fn apply_jitter(v: i16, state: &mut u64, span: u64, jitter: i16, smax: i16) -> i16 {
+    let j = (lcg(state) % span) as i64 - jitter as i64;
+    (v as i64 + j).clamp(-(smax as i64), smax as i64) as i16
+}
+
+// Aquece com pontos reais do índice (mesma distribuição que o teste consulta),
+// não com vetores sintéticos. Cada ponto recebe jitter nas dimensões contínuas
+// para a query cair perto de um ponto sem coincidir — assim a maioria das
+// queries percorre a busca completa (caminho caro que domina a cauda) em vez de
+// disparar early_hit, reproduzindo a mistura de caminhos do tráfego real.
+// API_WARMUP_JITTER controla a amplitude (em unidades quantizadas; SCALE=10000).
 fn warm_up_index(index: &IndexReader) {
-    let count = env::var("API_WARMUP_QUERIES")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(2048);
+    let count = env_usize("API_WARMUP_QUERIES", 2048);
+    let jitter = env_usize("API_WARMUP_JITTER", 120) as i16;
+    let n = index.n_points();
+    if n == 0 || count == 0 {
+        return;
+    }
+    let smax: i16 = SCALE as i16;
+    // Dims contínuas; categóricas (9,10,11) ficam de fora p/ não gerar valores
+    // impossíveis. As temporais (5,6) só recebem jitter quando não são a
+    // sentinela -SCALE ("sem última transação").
+    const CONT: [usize; 9] = [0, 1, 2, 3, 4, 7, 8, 12, 13];
+    let span = (2 * jitter as i64 + 1) as u64;
+    let mut state: u64 = 0x9E3779B97F4A7C15;
     let mut sum = 0u8;
-    for i in 0..count {
-        let mut q = [0i16; STORE_DIM];
-        for (d, slot) in q.iter_mut().enumerate().take(14) {
-            let raw = ((i * 313 + d * 1009) % (SCALE as usize + 1)) as i16;
-            *slot = raw;
-        }
-        if i & 3 == 0 {
-            q[5] = -(SCALE as i16);
-            q[6] = -(SCALE as i16);
-        }
-        if i & 1 != 0 {
-            q[9] = SCALE as i16;
-        }
-        if i & 2 != 0 {
-            q[10] = SCALE as i16;
-        }
-        if i & 4 != 0 {
-            q[11] = SCALE as i16;
+    for _ in 0..count {
+        let idx = (lcg(&mut state) >> 33) as u32 % n;
+        let mut q = index.point(idx);
+        if jitter > 0 {
+            for &d in &CONT {
+                q[d] = apply_jitter(q[d], &mut state, span, jitter, smax);
+            }
+            if q[5] != -smax {
+                q[5] = apply_jitter(q[5], &mut state, span, jitter, smax);
+            }
+            if q[6] != -smax {
+                q[6] = apply_jitter(q[6], &mut state, span, jitter, smax);
+            }
         }
         sum ^= index.fraud_count(&q);
     }

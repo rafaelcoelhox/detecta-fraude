@@ -342,6 +342,24 @@ impl IndexReader {
         unsafe { self.base.add(self.vectors_off) as *const i16 }
     }
 
+    /// Reconstrói o i-ésimo vetor quantizado do índice, desintercalando o layout
+    /// de blocks SIMD (LANES pontos por block; dims armazenadas em pares via
+    /// ivf_pair_offset, e só as DIM reais — o padding STORE_DIM fica zerado).
+    /// Usado pelo warmup para amostrar pontos reais (mesma distribuição que o
+    /// teste consulta) em vez de queries sintéticas.
+    #[inline]
+    pub fn point(&self, i: u32) -> [i16; STORE_DIM] {
+        debug_assert!(i < self.header.n_points);
+        let b = i as usize / LANES;
+        let lane = i as usize % LANES;
+        let block_off = self.vectors_off + b * BLOCK_BYTES;
+        let mut q = [0i16; STORE_DIM];
+        for d in 0..DIM {
+            q[d] = read_i16_at(self.base, block_off + ivf_pair_offset(d, lane) * 2);
+        }
+        q
+    }
+
     #[inline]
     fn labels_ptr(&self) -> *const u8 {
         unsafe { self.base.add(self.labels_off) }
@@ -2013,5 +2031,47 @@ mod tests {
         let lo = [50i16; STORE_DIM];
         let hi = [200i16; STORE_DIM];
         assert_eq!(lower_bound_vec(&q, &lo, &hi), 0);
+    }
+
+    // Valida point() contra um índice real. Só roda com INDEX_TEST_PATH setado
+    // (o índice não é commitado): INDEX_TEST_PATH=/tmp/index.bin cargo test point
+    #[test]
+    fn point_reconstruction_invariants() {
+        let path = match std::env::var("INDEX_TEST_PATH") {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        let idx = IndexReader::open(Path::new(&path)).expect("abrir índice");
+        let n = idx.n_points();
+        assert!(n > 0);
+        let smax = SCALE as i16;
+        // amostra espalhada incluindo as bordas (0 e n-1)
+        let samples = [0u32, 1, 7, 8, n / 3, n / 2, n - 2, n - 1];
+        for &i in &samples {
+            if i >= n {
+                continue;
+            }
+            let q = idx.point(i);
+            // dims contínuas dentro do range quantizado
+            for d in 0..DIM {
+                assert!(
+                    q[d] >= -smax && q[d] <= smax,
+                    "ponto {i} dim {d} fora do range: {}",
+                    q[d]
+                );
+            }
+            // categóricas binárias: is_online/card_present/unknown_merchant ∈ {0, SCALE}
+            for &d in &[9usize, 10, 11] {
+                assert!(
+                    q[d] == 0 || q[d] == smax,
+                    "ponto {i} dim {d} não é binária: {}",
+                    q[d]
+                );
+            }
+            // padding STORE_DIM não armazenado: deve sair zerado
+            for d in DIM..STORE_DIM {
+                assert_eq!(q[d], 0, "ponto {i} padding dim {d} não-zero");
+            }
+        }
     }
 }

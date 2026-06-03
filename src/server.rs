@@ -214,11 +214,11 @@ impl Server {
                         unsafe { libc::close(fd) };
                         continue;
                     }
-                    if let Err(_) = set_nonblocking(fd) {
-                        unsafe { libc::close(fd) };
-                        continue;
-                    }
-                    set_tcp_options(fd);
+                    // O FD chega via SCM_RIGHTS já não-bloqueante (o LB faz accept4 com
+                    // SOCK_NONBLOCK) e com TCP_NODELAY ativo — ambos vivem na open file
+                    // description / struct sock compartilhados, então viajam com o FD.
+                    // Só refazemos TCP_QUICKACK, que é one-shot e o kernel reseta sozinho.
+                    set_quickack(fd);
                     if self.register(fd).is_err() {
                         unsafe { libc::close(fd) };
                         continue;
@@ -688,16 +688,9 @@ fn set_nonblocking(fd: c_int) -> io::Result<()> {
     Ok(())
 }
 
-fn set_tcp_options(fd: c_int) {
+fn set_quickack(fd: c_int) {
     let on: c_int = 1;
     unsafe {
-        libc::setsockopt(
-            fd,
-            libc::IPPROTO_TCP,
-            libc::TCP_NODELAY,
-            &on as *const c_int as *const c_void,
-            std::mem::size_of::<c_int>() as libc::socklen_t,
-        );
         libc::setsockopt(
             fd,
             libc::IPPROTO_TCP,
