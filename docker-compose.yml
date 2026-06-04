@@ -27,7 +27,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.20"
+          cpus: "0.10"
           memory: "20MB"
 
   api1:
