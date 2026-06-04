@@ -27,11 +27,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.10"
+          cpus: "0.20"
           memory: "20MB"
 
   api1:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:leaf256-20260528
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:master-20260529-884bebb
     container_name: detecta-api1
     platform: linux/amd64
     cpuset: "0"
@@ -47,7 +47,10 @@ services:
       INDEX_MLOCK: "1"
       INDEX_PATH: "/index/index.bin"
       EPOLL_SPIN_US: "0"
-      EPOLL_IDLE_US: "250"
+      EPOLL_IDLE_US: "60"
+      EPOLL_BUSY_POLL_US: "0"
+      EPOLL_BUSY_POLL_BUDGET: "8"
+      EPOLL_PREFER_BUSY_POLL: "0"
     logging:
       driver: none
     ulimits:
@@ -60,11 +63,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.45"
+          cpus: "0.40"
           memory: "165MB"
 
   api2:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:leaf256-20260528
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:master-20260529-884bebb
     container_name: detecta-api2
     platform: linux/amd64
     cpuset: "1"
@@ -79,7 +82,10 @@ services:
       INDEX_MLOCK: "1"
       INDEX_PATH: "/index/index.bin"
       EPOLL_SPIN_US: "0"
-      EPOLL_IDLE_US: "250"
+      EPOLL_IDLE_US: "60"
+      EPOLL_BUSY_POLL_US: "0"
+      EPOLL_BUSY_POLL_BUDGET: "8"
+      EPOLL_PREFER_BUSY_POLL: "0"
     logging:
       driver: none
     ulimits:
@@ -92,7 +98,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.45"
+          cpus: "0.40"
           memory: "165MB"
 
 networks:
