@@ -31,7 +31,7 @@ services:
           memory: "20MB"
 
   api1:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:thp-20260603
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:huge-aligned-20260604
     container_name: detecta-api1
     platform: linux/amd64
     cpuset: "0"
@@ -69,7 +69,7 @@ services:
           memory: "165MB"
 
   api2:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:thp-20260603
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-api:huge-aligned-20260604
     container_name: detecta-api2
     platform: linux/amd64
     cpuset: "1"
