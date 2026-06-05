@@ -27,7 +27,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.02"
+          cpus: "0.05"
           memory: "20MB"
 
   api1:
@@ -64,7 +64,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.49"
+          cpus: "0.475"
           memory: "165MB"
 
   api2:
@@ -72,7 +72,8 @@ services:
     container_name: detecta-api2
     platform: linux/amd64
     cpuset: "1"
-    network_mode: "none"
+    networks:
+      - rinha
     volumes:
       - sockets:/sockets
     environment:
@@ -100,7 +101,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.49"
+          cpus: "0.475"
           memory: "165MB"
 
 networks:
