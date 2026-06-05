@@ -1,6 +1,6 @@
 services:
   lb:
-    image: ghcr.io/rafaelcoelhox/detecta-fraude-lb:fd-p99-202605281043
+    image: ghcr.io/rafaelcoelhox/detecta-fraude-lb:p99-parity-202606022325-cfc2833
     container_name: detecta-lb
     platform: linux/amd64
     cpuset: "2,3"
@@ -13,7 +13,7 @@ services:
     environment:
       LB_PORT: "9999"
       LB_BACKLOG: "65535"
-      LB_ACCEPT_BATCH: "64"
+      LB_ACCEPT_BATCH: "128"
       API_SOCKETS: "/sockets/api1-w0.sock,/sockets/api2-w0.sock"
     depends_on:
       api1:
@@ -27,7 +27,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.20"
+          cpus: "0.02"
           memory: "20MB"
 
   api1:
@@ -64,7 +64,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.40"
+          cpus: "0.49"
           memory: "165MB"
 
   api2:
@@ -84,7 +84,7 @@ services:
       INDEX_HUGE: "1"
       INDEX_PATH: "/index/index.bin"
       EPOLL_SPIN_US: "0"
-      EPOLL_IDLE_US: "30"
+      EPOLL_IDLE_US: "40"
       EPOLL_BUSY_POLL_US: "0"
       EPOLL_BUSY_POLL_BUDGET: "8"
       EPOLL_PREFER_BUSY_POLL: "0"
@@ -100,7 +100,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.40"
+          cpus: "0.49"
           memory: "165MB"
 
 networks:
