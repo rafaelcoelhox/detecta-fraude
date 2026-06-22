@@ -1,0 +1,43 @@
+
+FROM rust:1.95-slim-bookworm AS rust-builder
+WORKDIR /src
+
+ENV CARGO_HOME=/usr/local/cargo
+ENV RUSTFLAGS="-C target-cpu=haswell -C target-feature=+avx2,+fma,+bmi2"
+
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir -p src/bin && \
+    echo "fn main(){}" > src/bin/fraud-api.rs && \
+    echo "fn main(){}" > src/bin/index-builder.rs && \
+    echo "" > src/lib.rs && \
+    cargo build --release --bin fraud-api && \
+    cargo build --release --features builder --bin index-builder && \
+    rm -rf src target/release/deps/detecta_fraude* target/release/deps/fraud_api* target/release/deps/index_builder* \
+        target/release/fraud-api target/release/index-builder
+
+COPY src ./src
+RUN touch src/lib.rs src/bin/*.rs && \
+    cargo build --release --bin fraud-api && \
+    cargo build --release --features builder --bin index-builder
+
+ARG KD_LEAF_SIZE=256
+COPY resources/references.json.gz /tmp/references.json.gz
+RUN KD_LEAF_SIZE=${KD_LEAF_SIZE} /src/target/release/index-builder /tmp/references.json.gz /tmp/index.bin && \
+    rm /tmp/references.json.gz
+
+
+FROM gcr.io/distroless/cc-debian12:latest
+COPY --from=rust-builder /src/target/release/fraud-api /usr/local/bin/fraud-api
+COPY --from=rust-builder /tmp/index.bin /index/index.bin
+ENV API_WORKERS=1 \
+    CONN_POOL_CAP=512 \
+    API_WARMUP_QUERIES=4096 \
+    INDEX_MLOCK=1 \
+    INDEX_HUGE=1 \
+    INDEX_PATH=/index/index.bin \
+    EPOLL_SPIN_US=0 \
+    EPOLL_IDLE_US=60 \
+    EPOLL_BUSY_POLL_US=100 \
+    EPOLL_BUSY_POLL_BUDGET=8 \
+    EPOLL_PREFER_BUSY_POLL=1
+ENTRYPOINT ["/usr/local/bin/fraud-api"]

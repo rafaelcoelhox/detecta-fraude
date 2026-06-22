@@ -1,0 +1,9 @@
+target/
+.git/
+.github/
+.idea/
+.vscode/
+test/
+*.bin
+README.md
+LICENSE
